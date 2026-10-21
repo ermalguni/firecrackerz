@@ -49,10 +49,10 @@ pub const Transport = struct {
         self.* = undefined;
     }
 
-    pub fn getVersion(self: *Transport) !Response {
+    pub fn get(self: *Transport, comptime path: []const u8) !Response {
         // Non-streaming fetch includes the entire body in Dusty's deadline and
         // size limit; body() below only retrieves that already-buffered result.
-        var response = try self.client.fetch("http://localhost/version", .{
+        var response = try self.client.fetch("http://localhost" ++ path, .{
             .method = .get,
             .unix_socket_path = self.socket_path,
             .decompress = false,

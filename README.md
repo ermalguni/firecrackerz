@@ -4,9 +4,9 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 ## Status and scope
 
-The read-only connection milestone is implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** The inspection example has been exercised against a disposable real v1.17.0 instance.
+Read-only connection and machine inspection are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getMachineConfiguration()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** Both the handshake and machine configuration read have been exercised against a real v1.17.0 instance.
 
-VM configuration and action methods are not implemented. Neither are capability queries or development-snapshot support. Generated v1.18 models do not establish runtime support.
+VM configuration writes and action methods are not implemented. Neither are capability queries or development-snapshot support. Generated v1.18 models do not establish runtime support.
 
 The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, and VM/process lifecycle remain application responsibilities.
 
@@ -58,6 +58,31 @@ switch (result) {
 
 `search_path` is a caller-provided colon-separated PATH directory list, not an executable name. Discovery searches for `firecracker`; empty entries designate the current directory. Privileged applications should supply a trusted explicit executable path instead.
 
+### Reading machine configuration
+
+On a successfully connected client:
+
+```zig
+var configuration = try client.getMachineConfiguration();
+defer configuration.deinit();
+
+switch (configuration) {
+    .success => |config| std.log.info("vCPUs: {d}; memory: {d} MiB", .{
+        config.vcpu_count, config.mem_size_mib,
+    }),
+    .fault => |fault| std.log.err("Machine configuration HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+This sends `GET /machine-config` on a fresh connection, using the client's request timeout and response-body limit. It does not modify the VM.
+
+The result is `Result(models.MachineConfiguration)`. Required fields are `vcpu_count` and `mem_size_mib`; `smt`, `track_dirty_pages`, `cpu_template`, and `huge_pages` preserve missing/null values as `null`. String values are owned by the result, independent of the HTTP response and client. The result may outlive the client but not its allocator. Call `configuration.deinit()` exactly once; do not separately deinitialize its success value. Its arena is internal ownership storage and must not be modified.
+
+Non-200 responses preserve their status and raw body as `.fault`. Invalid JSON, missing required fields, and transport failures return Zig errors.
+
+
 ### Connection behavior
 
 1. Resolve the executable to an absolute path and check executability.
@@ -88,30 +113,33 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 | --- | --- |
 | `zig build` / `zig build check` | Compile library tests, protocol runner, and inspection example |
 | `zig build test` | Run version and discovery unit tests |
-| `zig build protocol` | Run local Unix-socket connection and subprocess discovery scenarios |
-| `zig build discovery-test` | Run the same combined discovery/connection scenarios |
+| `zig build protocol` | Run local Unix-socket connection, machine configuration, and subprocess discovery scenarios |
+| `zig build discovery-test` | Run the same combined protocol scenarios |
 | `zig build examples` | Build and install the inspection example |
-| `zig build inspect -- SOCKET EXECUTABLE` | Connect and print verified metadata |
+| `zig build inspect -- SOCKET EXECUTABLE` | Print verified metadata and current machine configuration |
 | `zig build integration -- SOCKET EXECUTABLE` | Run the inspection example against a disposable real instance |
 | `zig build codegen` | Regenerate version-specific wire models |
 
 Protocol scenarios cover explicit and PATH discovery, supported versions, content-length and chunked responses, version mismatch, preserved HTTP faults, malformed JSON, socket absence, oversized responses, request and discovery timeouts, malformed executable output, process failure, and unsupported releases.
 
-Always use a disposable instance for integration checks, never a production socket. The inspection example sends only `GET /version`; it does not configure or boot a guest.
+Machine configuration scenarios additionally cover a fresh connection after the handshake, repeated reads with retained results, strings and faults surviving client destruction, absent optional fields, missing required fields, and server disconnects.
+
+Use a disposable instance for general integration checks. The inspection example sends only `GET /version` and `GET /machine-config`; it does not configure or boot a guest.
 
 ## Architecture
 
 - `src/root.zig`: public exports only.
 - `src/client.zig`: unified construction, handshake, metadata, and ownership.
-- `src/models.zig`: stable public metadata models.
+- `src/models.zig`: stable public metadata and owned machine configuration models.
 - `src/result.zig`: owned results and HTTP faults.
 - `src/internal/discovery.zig`: executable resolution and bounded probing.
 - `src/internal/version.zig`: parsing and explicit support registry.
 - `src/internal/transport.zig`: shared Unix-socket HTTP transport.
+- `src/internal/operations.zig`: shared endpoint operations.
 - `src/internal/backend.zig`: private contract selection and dispatch.
 - `src/versions/v1_17/adapter.zig`: wire-response decoding.
 
-See [AGENTS.md](AGENTS.md) for the intended full-client layout. Shared endpoint operations and feature capabilities will be added when endpoints beyond the connection handshake are implemented; there are no placeholder endpoint methods.
+See [AGENTS.md](AGENTS.md) for the intended full-client layout. Feature capabilities and additional endpoints are not implemented; there are no placeholder endpoint methods.
 
 ### Model generation and additional versions
 

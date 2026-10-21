@@ -5,6 +5,7 @@ const Backend = @import("internal/backend.zig").Backend;
 const Transport = @import("internal/transport.zig").Transport;
 const models = @import("models.zig");
 const results = @import("result.zig");
+const operations = @import("internal/operations.zig");
 
 pub const Binary = discovery.Binary;
 pub const ConnectOptions = struct {
@@ -30,7 +31,7 @@ pub const Client = struct {
         const backend = try Backend.select(discovered.version);
         var transport = try Transport.init(allocator, io, options.socket_path, options.request_timeout_ms);
         errdefer transport.deinit();
-        var response = try transport.getVersion();
+        var response = try transport.get("/version");
         errdefer response.deinit();
         if (response.status != 200) {
             const body = try allocator.dupe(u8, response.body);
@@ -59,6 +60,11 @@ pub const Client = struct {
             .running_version = publicVersion(self.running_version),
             .contract = self.backend.contract(),
         };
+    }
+
+    /// Fetches current configuration. The owned result may outlive the client.
+    pub fn getMachineConfiguration(self: *Client) !results.Result(models.MachineConfiguration) {
+        return operations.getMachineConfiguration(self.allocator, &self.transport, self.backend);
     }
 
     pub fn deinit(self: *Client) void {
