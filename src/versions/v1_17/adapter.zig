@@ -11,6 +11,20 @@ pub fn decodeVersion(allocator: std.mem.Allocator, body: []const u8) !version.Ve
     return version.parse(parsed.value.firecracker_version);
 }
 
+pub fn decodeInstanceInfo(allocator: std.mem.Allocator, body: []const u8) !models.InstanceInfo {
+    const parsed = try std.json.parseFromSlice(wire.InstanceInfo, allocator, body, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    });
+    return .{
+        .id = parsed.value.id,
+        .state = parsed.value.state,
+        .vmm_version = parsed.value.vmm_version,
+        .app_name = parsed.value.app_name,
+        .arena = parsed.arena,
+    };
+}
+
 pub fn decodeMachineConfiguration(allocator: std.mem.Allocator, body: []const u8) !models.MachineConfiguration {
     const parsed = try std.json.parseFromSlice(wire.MachineConfiguration, allocator, body, .{
         .ignore_unknown_fields = true,

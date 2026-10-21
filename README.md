@@ -4,7 +4,7 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 ## Status and scope
 
-Connection, machine configuration reads/writes, boot-source configuration, drive configuration, and instance start are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `startInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
+Connection, live instance-information reads, machine configuration reads/writes, boot-source configuration, drive configuration, and instance start are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getInstanceInfo()`, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `startInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
 
 Other device configuration, other action methods, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
@@ -57,6 +57,32 @@ switch (result) {
 ```
 
 `search_path` is a caller-provided colon-separated PATH directory list, not an executable name. Discovery searches for `firecracker`; empty entries designate the current directory. Privileged applications should supply a trusted explicit executable path instead.
+
+### Reading live instance information
+
+On a successfully connected client:
+
+```zig
+var instance = try client.getInstanceInfo();
+defer instance.deinit();
+
+switch (instance) {
+    .success => |value| std.log.info("Instance {s}: {s} ({s} {s})", .{
+        value.id, value.state, value.app_name, value.vmm_version,
+    }),
+    .fault => |fault| std.log.err("Instance information HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+`getInstanceInfo()` sends a fresh `GET /` request and returns `Result(models.InstanceInfo)`. Unlike `client.info()` (cached handshake metadata), this is a live, read-only snapshot. It neither polls nor waits for readiness.
+
+All four response fields—`id`, `state`, `vmm_version`, and `app_name`—are required strings. The v1.17 states are `Not started`, `Running`, and `Paused`. State strings are preserved rather than mapped to an enum; callers must handle unfamiliar values explicitly, not treat them as running. Additional JSON fields are ignored. `vmm_version` preserves the returned build-version string; it does not replace the version verified during connection.
+
+Strings are owned by the result, independent of the HTTP response and client. A result may outlive the client but not its allocator; subsequent reads do not mutate retained results. Call `instance.deinit()` exactly once, do not separately deinitialize the contained value, and do not modify its internal arena.
+
+HTTP 200 is decoded; all other statuses preserve their raw body and status as an owned `.fault`. Malformed JSON, missing/null/non-string required fields, and transport failures return Zig errors. Existing timeout, response-size limit, and no-retry behavior apply. `Running` describes the VM, not guest application readiness.
 
 ### Reading machine configuration
 
@@ -181,7 +207,7 @@ switch (started) {
 
 This sends `PUT /actions` with `{"action_type":"InstanceStart"}` and returns `Result(void)`. HTTP 204 succeeds without JSON decoding; every other status preserves an owned raw fault. Transport/allocation failures remain Zig errors. Firecracker validates configuration and lifecycle: a successful start is allowed only once, and missing boot configuration or a repeated start is rejected. The client does not cache a running flag or suppress subsequent requests.
 
-**There are no automatic retries.** A timeout or disconnect after sending the action does not establish whether the VM started. Inspect Firecracker's live state (`GET /`, outside the current client API) before deciding what to do; `client.info()` is cached connection metadata, not VM state. Existing request timeouts and response limits apply.
+**There are no automatic retries.** A timeout or disconnect after sending the action does not establish whether the VM started. Call `client.getInstanceInfo()` to inspect live state before deciding what to do; `client.info()` is cached connection metadata, not VM state. A read is a snapshot, not a guarantee against concurrent lifecycle changes. If the read fails or the outcome remains ambiguous, do not assume startup failed and blindly retry. Existing request timeouts and response limits apply.
 
 Success means Firecracker accepted startup, not that the guest reached userspace or that an application is ready. A disk-backed guest needs a bootable root filesystem; an initramfs-only guest need not have a root drive. Destroying the client closes client resources; it does not stop the VM or terminate Firecracker.
 
@@ -216,10 +242,10 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 | --- | --- |
 | `zig build` / `zig build check` | Compile library tests, protocol and configuration runners, and examples |
 | `zig build test` | Run version and discovery unit tests |
-| `zig build protocol` | Run local Unix-socket connection, configuration, instance-start, and subprocess discovery scenarios |
+| `zig build protocol` | Run local Unix-socket connection, live instance-information, configuration, instance-start, and subprocess discovery scenarios |
 | `zig build discovery-test` | Run the same combined protocol scenarios |
 | `zig build examples` | Build and install the inspection and configure-and-start examples |
-| `zig build inspect -- SOCKET EXECUTABLE` | Print verified metadata and current machine configuration |
+| `zig build inspect -- SOCKET EXECUTABLE` | Print verified metadata, live instance information, and current machine configuration |
 | `zig build integration -- SOCKET EXECUTABLE` | Run the inspection example against a disposable real instance |
 | `zig build configure-test -- SOCKET EXECUTABLE --disposable` | Mutate a disposable pre-boot instance; verify readback, optional-field reset, and invalid-update rejection |
 | `zig build boot-source-test -- SOCKET EXECUTABLE KERNEL INITRD --disposable` | Configure a disposable pre-boot instance; exercise optional arguments, replacement, and invalid paths without starting a guest |
@@ -231,6 +257,10 @@ Protocol scenarios cover explicit and PATH discovery, supported versions, conten
 
 Machine configuration scenarios additionally cover a fresh connection after the handshake, repeated reads with retained results, strings and faults surviving client destruction, absent optional fields, missing required fields, and server disconnects.
 
+Instance-information scenarios cover state changes across repeated reads with retained results, all three documented states, unfamiliar state strings and extra JSON fields, escaped strings surviving client destruction, faults surviving client destruction, each required field missing/null, incorrect field types, malformed JSON, unexpected statuses, timeouts, disconnects, and response-size limits.
+
+Live instance-information verification on v1.17.0 used the inspection example to read `Not started`, then `Running` after the configure-and-start example, and `Paused` after a direct `PATCH /vm` probe. All reads returned the configured instance ID, VMM version, and application name. Pausing was test setup through the direct API; the client does not yet expose a pause method.
+
 PUT scenarios verify omitted versus explicit optional fields, JSON content type and request body, empty HTTP 204 success, unexpected statuses, owned fault bodies, timeouts, disconnects, and oversized fault responses.
 
 Boot-source scenarios additionally verify JSON escaping for paths and arguments, omitted optional fields versus explicit empty arguments, and the `/boot-source` endpoint. Live verification used `/boot/vmlinuz-linux` and the readable `/boot/amd-ucode.img` early initramfs; the root-only `/boot/initramfs-linux.img` produced a preserved HTTP 400 permission fault. This verifies API configuration, not guest boot or a complete guest userspace.
@@ -239,7 +269,7 @@ Drive scenarios additionally cover all optional and nested fields, omitted versu
 
 Instance-start protocol scenarios cover the action payload, empty 204 success, owned faults surviving client destruction, unexpected 200 responses, timeouts, disconnects, oversized faults, and absence of automatic retries. Live verification used Firecracker v1.17.0, the upstream CI x86_64 kernel `firecracker-ci/20261021-1e5fcc27b59f-0/x86_64/vmlinux-6.1.188`, and a temporary ext4 root filesystem with a static minimal init program. The configure-and-start example succeeded, `GET /` reported `Running`, and serial output confirmed the init program ran. Direct API probes rejected unconfigured and repeated starts with HTTP 400. This is a minimal boot smoke check, not verification of a production guest or application.
 
-Use a disposable instance for general integration checks. The inspection example sends only `GET /version` and `GET /machine-config`; it does not configure or boot a guest.
+Use a disposable instance for general integration checks. The inspection example sends only `GET /version`, `GET /`, and `GET /machine-config`; it does not configure or boot a guest.
 
 `configure-test` **writes** configuration and requires the `--disposable` acknowledgement. Never point it at an instance you need to preserve. It sets configuration twice and submits an invalid update to verify rejection leaves prior state intact.
 
@@ -253,7 +283,7 @@ Use a disposable instance for general integration checks. The inspection example
 
 - `src/root.zig`: public exports only.
 - `src/client.zig`: unified construction, handshake, metadata, and ownership.
-- `src/models.zig`: stable public metadata, borrowed configuration requests, and owned configuration responses.
+- `src/models.zig`: stable public metadata, borrowed configuration requests, and owned instance/configuration responses.
 - `src/result.zig`: owned results and HTTP faults.
 - `src/internal/discovery.zig`: executable resolution and bounded probing.
 - `src/internal/version.zig`: parsing and explicit support registry.

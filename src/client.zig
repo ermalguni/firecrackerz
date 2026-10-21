@@ -62,6 +62,12 @@ pub const Client = struct {
         };
     }
 
+    /// Fetches live instance state, unlike cached info(). Does not poll for readiness.
+    /// The owned result may outlive the client, but not its allocator.
+    pub fn getInstanceInfo(self: *Client) !results.Result(models.InstanceInfo) {
+        return operations.getInstanceInfo(self.allocator, &self.transport, self.backend);
+    }
+
     /// Fetches current configuration. The owned result may outlive the client.
     pub fn getMachineConfiguration(self: *Client) !results.Result(models.MachineConfiguration) {
         return operations.getMachineConfiguration(self.allocator, &self.transport, self.backend);

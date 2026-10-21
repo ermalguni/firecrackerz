@@ -23,6 +23,12 @@ pub const Backend = union(enum) {
         };
     }
 
+    pub fn decodeInstanceInfo(self: Backend, allocator: std.mem.Allocator, body: []const u8) !models.InstanceInfo {
+        return switch (self) {
+            .v1_17 => v1_17.decodeInstanceInfo(allocator, body),
+        };
+    }
+
     pub fn decodeMachineConfiguration(self: Backend, allocator: std.mem.Allocator, body: []const u8) !models.MachineConfiguration {
         return switch (self) {
             .v1_17 => v1_17.decodeMachineConfiguration(allocator, body),

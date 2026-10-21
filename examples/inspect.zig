@@ -19,6 +19,18 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("Connected: {s}; Firecracker {d}.{d}.{d}; contract {s}\n", .{
                 info.executable_path, v.major, v.minor, v.patch, @tagName(info.contract),
             });
+            var instance = try client.getInstanceInfo();
+            defer instance.deinit();
+            switch (instance) {
+                .success => |value| std.debug.print(
+                    "Instance: id={s}; state={s}; vmm_version={s}; app_name={s}\n",
+                    .{ value.id, value.state, value.vmm_version, value.app_name },
+                ),
+                .fault => |fault| {
+                    std.debug.print("Instance information HTTP {d}: {s}\n", .{ fault.status, fault.body });
+                    return error.InstanceInfoRejected;
+                },
+            }
             var configuration = try client.getMachineConfiguration();
             defer configuration.deinit();
             switch (configuration) {
