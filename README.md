@@ -1,63 +1,25 @@
 # firecrackerz
 
-Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-microvm/firecracker), designed to provide **one client interface across multiple Firecracker versions**.
+Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-microvm/firecracker), with one public client and private version adapters.
 
-## Project status
+## Status and scope
 
-This project is in the implementation-design stage. The package manifest and build configuration exist, but `src/root.zig` and the unified client implementation are currently absent. The API examples below describe the intended interface; they are **not runnable examples of an implemented API**.
+The read-only connection milestone is implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** The inspection example has been exercised against a disposable real v1.17.0 instance.
 
-Do not infer runtime version support from directory names or build targets. Supported releases must be explicitly registered and verified before being advertised as supported.
+VM configuration and action methods are not implemented. Neither are capability queries or development-snapshot support. Generated v1.18 models do not establish runtime support.
 
-## Goals and scope
-
-- Discover a local Firecracker executable and determine its version.
-- Reject unsupported versions before constructing a usable client.
-- Provide stable public request and response models, independent of runtime version.
-- Select version-specific adapters internally, without requiring callers to import version namespaces.
-- Communicate with a running Firecracker instance over its Unix-domain API socket.
-- Reject unsupported features explicitly rather than silently ignoring request fields.
-
-The proposed client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, configuring host networking, and managing VM/process lifecycle remain application responsibilities. Automatic process launching is not part of the proposed client interface.
+The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, and VM/process lifecycle remain application responsibilities.
 
 ## Requirements
 
-| Component | Requirement |
-| --- | --- |
-| Zig | Minimum version `0.17.0`, as declared in `build.zig.zon` |
-| Host | Linux for local Firecracker discovery and operation |
-| Firecracker | An installed executable with a version accepted by the library |
-| API endpoint | An accessible Unix socket served by a running Firecracker instance |
-| HTTP dependency | Dusty v0.4.0, pinned by commit and package hash |
-| Development tooling | `openapi2zig` on `PATH` for model generation; Python 3 for the configured protocol-fixture target |
+- Linux and Zig 0.17.0.
+- A trusted Firecracker v1.17.0 executable and an accessible running API socket.
+- Dusty v0.4.0, pinned by commit and package hash in `build.zig.zon`.
+- Python 3 for protocol scenarios; `openapi2zig` on `PATH` only for model generation.
 
-Running actual microVMs also requires Firecracker's host prerequisites, including KVM access. Installing this Zig package does not install Firecracker.
+## Usage
 
-## Intended connection flow
-
-`Client.connect` is intended to perform these steps:
-
-1. Resolve an explicit executable path or search a caller-supplied `PATH`.
-2. Execute the resolved binary with `--version`, without invoking a shell.
-3. Parse the version and select an explicitly supported API contract.
-4. Query `GET /version` on the supplied API socket.
-5. Verify that the running instance matches the discovered binary version.
-6. Return a unified client backed by the selected adapter.
-
-An installed binary does not prove which version serves a socket. Both checks are necessary for this construction path.
-
-Discovery executes local code. Privileged applications should use a trusted explicit executable path rather than an untrusted search path. Discovery must bound execution time and output size, and clean up its child process on failure.
-
-## Integrating the package
-
-The existing build configuration exports a module named `firecrackerz`. Once the implementation is available, add the package to your application's dependencies:
-
-```sh
-zig fetch --save=firecrackerz <repository-or-package-url>
-```
-
-Replace the URL placeholder with the package source you intend to use; pin a revision for reproducible builds.
-
-In your application's `build.zig`, after creating its executable:
+The build exports a module named `firecrackerz`. Add it to your application's root module:
 
 ```zig
 const firecrackerz = b.dependency("firecrackerz", .{
@@ -67,168 +29,99 @@ const firecrackerz = b.dependency("firecrackerz", .{
 exe.root_module.addImport("firecrackerz", firecrackerz.module("firecrackerz"));
 ```
 
-This wiring matches the declared module name, but cannot compile against the current missing source implementation.
-
-### Proposed client usage
-
-The following fragment assumes the application supplies an allocator, `std.Io`, and a process search path. Names and signatures are design targets, not a released API.
+With an allocator and `std.Io` supplied by the application:
 
 ```zig
 const fc = @import("firecrackerz");
 
-var client = try fc.Client.connect(allocator, io, .{
+var result = try fc.Client.connect(allocator, io, .{
     .socket_path = "/run/firecracker.sock",
-    .binary = .{ .search_path = process_path },
-    // Alternatively: .binary = .{ .executable = "/usr/bin/firecracker" },
-    .allow_development = false,
-});
-defer client.deinit();
-
-var result = try client.putMachineConfiguration(.{
-    .vcpu_count = 2,
-    .mem_size_mib = 256,
+    .binary = .{ .executable = "/usr/bin/firecracker" },
+    // Alternatively: .binary = .{ .search_path = process_path },
+    .discovery_timeout_ms = 3000,
+    .request_timeout_ms = 3000,
 });
 defer result.deinit();
 
 switch (result) {
-    .success => {},
-    .fault => |fault| {
-        std.log.err("Firecracker returned HTTP {d}: {s}", .{
-            fault.status,
-            fault.body,
+    .success => |*client| {
+        const info = client.info();
+        std.log.info("Connected to {s}, contract {s}", .{
+            info.executable_path, @tagName(info.contract),
         });
-        return error.ConfigurationRejected;
+    },
+    .fault => |fault| {
+        std.log.err("Firecracker HTTP {d}: {s}", .{ fault.status, fault.body });
     },
 }
 ```
 
-This operation configures a machine; it does not boot a guest. The application must configure the required boot source and devices before requesting `InstanceStart`.
+`search_path` is a caller-provided colon-separated PATH directory list, not an executable name. Discovery searches for `firecracker`; empty entries designate the current directory. Privileged applications should supply a trusted explicit executable path instead.
 
-### Public API design
+### Connection behavior
 
-| Surface | Intended responsibility |
-| --- | --- |
-| `Client.connect` | Discovery, compatibility selection, socket version verification |
-| `Client.deinit` | Release client-owned resources |
-| `Client.info` | Executable path, detected and running versions, selected contract |
-| `Client.capabilities` | Feature availability without caller-side version comparisons |
-| API operation methods | Unified requests and responses, with internal version dispatch |
-| `models` | Version-independent public types |
-| `Result(T)` | Owned success value or HTTP fault |
+1. Resolve the executable to an absolute path and check executability.
+2. Execute it directly with `--version`, without a shell. Bound combined stdout/stderr to 4096 bytes and enforce a deadline through child exit. Clean up and reap the child on failures.
+3. Parse the Firecracker version banner and require an explicitly registered release.
+4. Send `GET /version` over the supplied Unix-domain socket using Dusty.
+5. Require HTTP 200, decode the version, and compare it with the executable's version.
+6. Return an owning `Result(Client)`.
 
-Preserve upstream operation names where practical, such as `putMachineConfiguration` and `createSyncAction`.
+Semantic-version build metadata is validated but ignored for compatibility and equality. Prereleases, development versions, and unknown patch releases are rejected. A matching version is not authentication of the server or proof of executable identity; trust the socket and executable paths.
 
-## Compatibility and error handling
+The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit. Discovery has its own 3000 ms timeout. Zero timeouts are invalid. Redirects, automatic retries, decompression, and idle connection pooling are disabled. The handshake connection closes after its response is consumed; the client retains transport configuration, not a permanent live socket. `info()` returns cached handshake metadata, not a live health check.
 
-The intended support policy is conservative:
+### Errors and ownership
 
-- Accept only explicitly verified runtime versions.
-- Ignore semantic-version build metadata when selecting a contract.
-- Reject unknown patch releases and prereleases rather than assuming compatibility.
-- Require explicit opt-in for supported development snapshots. A development version string alone does not identify an upstream commit.
-- Reuse one adapter across releases only after validating their API contracts.
-
-Public models must not alias a runtime-selected version's wire models. Adapters translate stable public types into the selected contract and normalize responses back into public types.
-
-If a caller supplies a field unavailable in the selected contract, return `error.UnsupportedFeature` before sending the request. Omitting an optional newer-only field should still permit a compatible request. Capability queries are a convenience; operations must enforce compatibility independently.
-
-Construction should distinguish executable absence, process failure, malformed version output, unsupported versions, disallowed development versions, and installed/running version mismatches. Transport and protocol errors should retain their own meaning.
-
-Keep HTTP faults separate from ordinary Zig errors. The proposed `Result(T)` preserves HTTP status and raw fault body, while Zig errors represent local discovery, compatibility, allocation, transport, and decoding failures.
-
-### Intended ownership rules
-
-- Clients and results own their resources and require `deinit`.
-- The allocator and I/O runtime must outlive the client; result storage must not outlive its allocator.
-- Request data is borrowed for the duration of a call.
-- Do not copy live owning client values or assume concurrent calls are supported.
-- Construction failures must release partially initialized resources.
-- Configuration sequences are not transactions: earlier successful mutations remain applied if a later call fails.
-
-## Target directory structure
-
-This is the intended layout, not a list of currently implemented files. See [AGENTS.md](AGENTS.md) for repository instructions and architectural boundaries.
-
-```text
-firecrackerz/
-├── build.zig
-├── build.zig.zon
-├── README.md
-├── src/
-│   ├── root.zig                 # Public exports
-│   ├── client.zig               # Unified facade and construction
-│   ├── models.zig               # Stable public models
-│   ├── result.zig               # Response ownership and HTTP faults
-│   ├── capabilities.zig         # Feature availability
-│   ├── internal/
-│   │   ├── discovery.zig        # Executable resolution and --version
-│   │   ├── version.zig          # Supported-contract registry
-│   │   ├── backend.zig          # Private tagged-union dispatch
-│   │   ├── transport.zig        # Unix-socket HTTP transport
-│   │   └── operations.zig       # Shared endpoint implementations
-│   └── versions/
-│       ├── v1_17/
-│       │   ├── adapter.zig      # Compatibility and conversions
-│       │   └── models.zig       # Generated wire models
-│       └── v1_18/
-│           ├── adapter.zig
-│           └── models.zig
-├── spec/
-│   ├── v1_17/                  # Pinned schemas and provenance
-│   └── v1_18/
-├── tests/
-│   ├── discovery.zig
-│   ├── compatibility.zig
-│   └── protocol.zig
-└── examples/
-    ├── discover.zig
-    ├── inspect.zig
-    └── configure_and_start.zig
-```
-
-Keep handwritten public models separate from generated wire models. Share identical endpoint implementations and introduce adapter-specific behavior only where contracts differ.
+- Ordinary Zig errors represent local failures: discovery, unsupported versions, allocation, timeout, transport, malformed responses, and `VersionMismatch`.
+- Discovery distinguishes `ExecutableNotFound`, `NotExecutable`, `InvalidExecutablePath`, `ProcessFailed`, `InvalidVersionOutput`, `OutputTooLong`, `UnsupportedVersion`, and `PrereleaseVersion`.
+- Non-200 HTTP responses return `.fault` with owned raw body and numeric status. Oversized or unreadable fault bodies remain transport errors.
+- `Result(Client).deinit()` releases either its client or its HTTP fault. Do not also deinitialize the contained client.
+- Clients and results are owning values: do not copy them or deinitialize them twice.
+- The allocator and I/O runtime must outlive the client. Metadata strings are borrowed until client destruction.
+- Input paths are copied during construction. Failed construction releases partially acquired resources.
+- Concurrent use is not supported.
 
 ## Development and verification
 
-The current `build.zig` declares these commands. They are build configuration entrypoints, **not claims that the incomplete checkout builds or that these checks have passed**.
-
-| Command | Configured purpose |
+| Command | Purpose |
 | --- | --- |
-| `zig build` / `zig build check` | Compile library tests, examples, and scenario runners |
-| `zig build test` | Run library tests |
-| `zig build codegen` | Generate version-specific Firecracker models with `openapi2zig` |
-| `zig build protocol` | Exercise API contracts through a local Unix-socket fixture |
-| `zig build discovery-test` | Exercise executable discovery, limits, and deadlines |
-| `zig build examples` | Build and install usage examples |
-| `zig build integration -- SOCKET` | Exercise a disposable v1.17.0 API instance |
+| `zig build` / `zig build check` | Compile library tests, protocol runner, and inspection example |
+| `zig build test` | Run version and discovery unit tests |
+| `zig build protocol` | Run local Unix-socket connection and subprocess discovery scenarios |
+| `zig build discovery-test` | Run the same combined discovery/connection scenarios |
+| `zig build examples` | Build and install the inspection example |
+| `zig build inspect -- SOCKET EXECUTABLE` | Connect and print verified metadata |
+| `zig build integration -- SOCKET EXECUTABLE` | Run the inspection example against a disposable real instance |
+| `zig build codegen` | Regenerate version-specific wire models |
 
-These targets require their referenced source files and scripts. Integration checks must use a disposable instance, never a production socket.
+Protocol scenarios cover explicit and PATH discovery, supported versions, content-length and chunked responses, version mismatch, preserved HTTP faults, malformed JSON, socket absence, oversized responses, request and discovery timeouts, malformed executable output, process failure, and unsupported releases.
 
-Model generation runs `openapi2zig generate --models-only` for each configured version:
+Always use a disposable instance for integration checks, never a production socket. The inspection example sends only `GET /version`; it does not configure or boot a guest.
 
-| Input specification | Generated output |
-| --- | --- |
-| `spec/v1_17/firecracker.json` | `src/versions/v1_17/models.zig` |
-| `spec/v1_18/firecracker.json` | `src/versions/v1_18/models.zig` |
+## Architecture
 
-Run `zig build codegen` after changing the input schemas. It overwrites the generated wire-model files; keep handwritten public models and adapters separate. Generation does not implement the client or establish runtime compatibility. Add new version identifiers to the code-generation loop in `build.zig`.
+- `src/root.zig`: public exports only.
+- `src/client.zig`: unified construction, handshake, metadata, and ownership.
+- `src/models.zig`: stable public metadata models.
+- `src/result.zig`: owned results and HTTP faults.
+- `src/internal/discovery.zig`: executable resolution and bounded probing.
+- `src/internal/version.zig`: parsing and explicit support registry.
+- `src/internal/transport.zig`: shared Unix-socket HTTP transport.
+- `src/internal/backend.zig`: private contract selection and dispatch.
+- `src/versions/v1_17/adapter.zig`: wire-response decoding.
 
-### Adding version support
+See [AGENTS.md](AGENTS.md) for the intended full-client layout. Shared endpoint operations and feature capabilities will be added when endpoints beyond the connection handshake are implemented; there are no placeholder endpoint methods.
 
-1. Pin the upstream schema and record its release or commit provenance under `spec/`.
-2. Compare it with existing supported contracts.
-3. Generate version-specific wire models; do not silently change public models to match an upstream schema.
-4. Add or update an adapter only for actual contract differences.
-5. Register explicitly accepted versions and capabilities.
-6. Verify request encoding, response normalization, unsupported-feature rejection, and discovery/connection version mismatches.
-7. Update user-facing compatibility documentation with the versions actually exercised.
+### Model generation and additional versions
 
-For AI agents and contributors: read `AGENTS.md` first, inspect the current implementation before relying on examples, and distinguish design targets from verified behavior. Do not bypass compatibility checks, silently drop fields, or expose version-specific types merely to make a unified method compile.
+`zig build codegen` invokes `openapi2zig generate --models-only` for each configured version, reading `spec/<version>/firecracker.json` and overwriting `src/versions/<version>/models.zig`. Do not hand-edit generated models. Keep stable public types and handwritten adapters separate.
+
+Adding runtime support requires pinned schema provenance, contract comparison, explicit registration, an adapter where behavior differs, and verification against that release. Directory names and successful generation do not establish support. Future operations must reject unsupported fields rather than silently discarding them.
 
 ## References
 
-- [Firecracker project](https://github.com/firecracker-microvm/firecracker)
-- [Upstream API specification](https://github.com/firecracker-microvm/firecracker/blob/main/src/firecracker/swagger/firecracker.yaml) — current upstream reference, not a pinned compatibility contract
+- [Firecracker API specification](https://github.com/firecracker-microvm/firecracker/blob/main/src/firecracker/swagger/firecracker.yaml)
 - [Firecracker API request documentation](https://github.com/firecracker-microvm/firecracker/tree/main/docs/api_requests)
 - [Dusty HTTP library](https://github.com/lalinsky/dusty)
 - [Repository license](LICENSE)
