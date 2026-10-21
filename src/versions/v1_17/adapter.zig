@@ -27,3 +27,15 @@ pub fn decodeMachineConfiguration(allocator: std.mem.Allocator, body: []const u8
         .arena = parsed.arena,
     };
 }
+
+pub fn encodeMachineConfiguration(allocator: std.mem.Allocator, request: models.MachineConfigurationRequest) ![]u8 {
+    const value: wire.MachineConfiguration = .{
+        .vcpu_count = request.vcpu_count,
+        .mem_size_mib = request.mem_size_mib,
+        .smt = request.smt,
+        .track_dirty_pages = request.track_dirty_pages,
+        .cpu_template = request.cpu_template,
+        .huge_pages = request.huge_pages,
+    };
+    return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+}

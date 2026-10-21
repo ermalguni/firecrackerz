@@ -4,9 +4,9 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 ## Status and scope
 
-Read-only connection and machine inspection are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getMachineConfiguration()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** Both the handshake and machine configuration read have been exercised against a real v1.17.0 instance.
+Connection and machine configuration reads/writes are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getMachineConfiguration()`, `putMachineConfiguration()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** Connection, configuration updates, and readback have been exercised against real v1.17.0 instances.
 
-VM configuration writes and action methods are not implemented. Neither are capability queries or development-snapshot support. Generated v1.18 models do not establish runtime support.
+Boot-source/device configuration, action methods, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
 The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, and VM/process lifecycle remain application responsibilities.
 
@@ -82,6 +82,31 @@ The result is `Result(models.MachineConfiguration)`. Required fields are `vcpu_c
 
 Non-200 responses preserve their status and raw body as `.fault`. Invalid JSON, missing required fields, and transport failures return Zig errors.
 
+### Writing machine configuration
+
+On a connected, **pre-boot** instance:
+
+```zig
+var updated = try client.putMachineConfiguration(.{
+    .vcpu_count = 2,
+    .mem_size_mib = 256,
+    .track_dirty_pages = true,
+});
+defer updated.deinit();
+
+switch (updated) {
+    .success => {},
+    .fault => |fault| std.log.err("Configuration rejected: HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+`models.MachineConfigurationRequest` is separate from the owned response model. Both integer fields are required; the optional fields are `smt`, `track_dirty_pages`, `cpu_template`, and `huge_pages`. Strings are borrowed only for the call. The adapter encodes every supplied field; null optional fields are omitted from JSON, while explicit `false` is preserved.
+
+This is `PUT /machine-config`, **not PATCH**. Omitted optional settings reset to Firecracker defaults (`smt=false`, `track_dirty_pages=false`, no CPU template, `huge_pages=None`); they do not preserve the previous configuration. Firecracker validates values and lifecycle restrictions. Invalid configurations are returned as HTTP faults, not silently corrected locally.
+
+The return type is `Result(void)`: HTTP 204 succeeds without JSON decoding; every other status is preserved as an owned fault. Call `updated.deinit()` even for a void success. Transport/allocation errors remain Zig errors. Requests use the existing timeout and response-size limit and are never automatically retried. A timeout or disconnect after sending a write does not prove the server rejected it; read back state before deciding whether to retry.
 
 ### Connection behavior
 
@@ -100,7 +125,7 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 
 - Ordinary Zig errors represent local failures: discovery, unsupported versions, allocation, timeout, transport, malformed responses, and `VersionMismatch`.
 - Discovery distinguishes `ExecutableNotFound`, `NotExecutable`, `InvalidExecutablePath`, `ProcessFailed`, `InvalidVersionOutput`, `OutputTooLong`, `UnsupportedVersion`, and `PrereleaseVersion`.
-- Non-200 HTTP responses return `.fault` with owned raw body and numeric status. Oversized or unreadable fault bodies remain transport errors.
+- Responses outside the operation's expected status (200 for reads, 204 for configuration writes) return `.fault` with owned raw body and numeric status. Oversized or unreadable fault bodies remain transport errors.
 - `Result(Client).deinit()` releases either its client or its HTTP fault. Do not also deinitialize the contained client.
 - Clients and results are owning values: do not copy them or deinitialize them twice.
 - The allocator and I/O runtime must outlive the client. Metadata strings are borrowed until client destruction.
@@ -111,33 +136,38 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 
 | Command | Purpose |
 | --- | --- |
-| `zig build` / `zig build check` | Compile library tests, protocol runner, and inspection example |
+| `zig build` / `zig build check` | Compile library tests, protocol and configuration runners, and inspection example |
 | `zig build test` | Run version and discovery unit tests |
 | `zig build protocol` | Run local Unix-socket connection, machine configuration, and subprocess discovery scenarios |
 | `zig build discovery-test` | Run the same combined protocol scenarios |
 | `zig build examples` | Build and install the inspection example |
 | `zig build inspect -- SOCKET EXECUTABLE` | Print verified metadata and current machine configuration |
 | `zig build integration -- SOCKET EXECUTABLE` | Run the inspection example against a disposable real instance |
+| `zig build configure-test -- SOCKET EXECUTABLE --disposable` | Mutate a disposable pre-boot instance; verify readback, optional-field reset, and invalid-update rejection |
 | `zig build codegen` | Regenerate version-specific wire models |
 
 Protocol scenarios cover explicit and PATH discovery, supported versions, content-length and chunked responses, version mismatch, preserved HTTP faults, malformed JSON, socket absence, oversized responses, request and discovery timeouts, malformed executable output, process failure, and unsupported releases.
 
 Machine configuration scenarios additionally cover a fresh connection after the handshake, repeated reads with retained results, strings and faults surviving client destruction, absent optional fields, missing required fields, and server disconnects.
 
+PUT scenarios verify omitted versus explicit optional fields, JSON content type and request body, empty HTTP 204 success, unexpected statuses, owned fault bodies, timeouts, disconnects, and oversized fault responses.
+
 Use a disposable instance for general integration checks. The inspection example sends only `GET /version` and `GET /machine-config`; it does not configure or boot a guest.
+
+`configure-test` **writes** configuration and requires the `--disposable` acknowledgement. Never point it at an instance you need to preserve. It sets configuration twice and submits an invalid update to verify rejection leaves prior state intact.
 
 ## Architecture
 
 - `src/root.zig`: public exports only.
 - `src/client.zig`: unified construction, handshake, metadata, and ownership.
-- `src/models.zig`: stable public metadata and owned machine configuration models.
+- `src/models.zig`: stable public metadata, borrowed configuration requests, and owned configuration responses.
 - `src/result.zig`: owned results and HTTP faults.
 - `src/internal/discovery.zig`: executable resolution and bounded probing.
 - `src/internal/version.zig`: parsing and explicit support registry.
 - `src/internal/transport.zig`: shared Unix-socket HTTP transport.
 - `src/internal/operations.zig`: shared endpoint operations.
 - `src/internal/backend.zig`: private contract selection and dispatch.
-- `src/versions/v1_17/adapter.zig`: wire-response decoding.
+- `src/versions/v1_17/adapter.zig`: wire-request encoding and response decoding.
 
 See [AGENTS.md](AGENTS.md) for the intended full-client layout. Feature capabilities and additional endpoints are not implemented; there are no placeholder endpoint methods.
 

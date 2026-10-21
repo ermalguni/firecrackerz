@@ -52,6 +52,20 @@ pub fn build(b: *std.Build) void {
     b.step("protocol", "Exercise connection behavior over a local Unix socket").dependOn(&protocol_run.step);
     b.step("discovery-test", "Exercise discovery and connection failures").dependOn(&protocol_run.step);
 
+    const configure = b.addExecutable(.{
+        .name = "configure-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/configure.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "firecrackerz", .module = mod }},
+        }),
+    });
+    check.dependOn(&configure.step);
+    const configure_run = b.addRunArtifact(configure);
+    configure_run.addPassthruArgs();
+    b.step("configure-test", "Write/read a disposable instance (-- SOCKET EXECUTABLE --disposable)").dependOn(&configure_run.step);
+
     const examples = b.step("examples", "Build library usage examples");
     inline for (.{"inspect"}) |name| {
         const exe = b.addExecutable(.{

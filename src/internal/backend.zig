@@ -28,4 +28,10 @@ pub const Backend = union(enum) {
             .v1_17 => v1_17.decodeMachineConfiguration(allocator, body),
         };
     }
+
+    pub fn encodeMachineConfiguration(self: Backend, allocator: std.mem.Allocator, request: models.MachineConfigurationRequest) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeMachineConfiguration(allocator, request),
+        };
+    }
 };

@@ -31,3 +31,14 @@ pub const MachineConfiguration = struct {
         self.* = undefined;
     }
 };
+
+/// Pre-boot replacement configuration, not a partial update. Strings are borrowed
+/// for the call; null optional fields are omitted and reset to server defaults.
+pub const MachineConfigurationRequest = struct {
+    vcpu_count: i64,
+    mem_size_mib: i64,
+    smt: ?bool = null,
+    track_dirty_pages: ?bool = null,
+    cpu_template: ?[]const u8 = null,
+    huge_pages: ?[]const u8 = null,
+};

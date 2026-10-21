@@ -67,6 +67,12 @@ pub const Client = struct {
         return operations.getMachineConfiguration(self.allocator, &self.transport, self.backend);
     }
 
+    /// Pre-boot replacement, not PATCH: omitted optional fields reset to defaults.
+    /// Request data is borrowed during the call. No automatic retries.
+    pub fn putMachineConfiguration(self: *Client, request: models.MachineConfigurationRequest) !results.Result(void) {
+        return operations.putMachineConfiguration(self.allocator, &self.transport, self.backend, request);
+    }
+
     pub fn deinit(self: *Client) void {
         self.transport.deinit();
         self.discovered.deinit(self.allocator);
