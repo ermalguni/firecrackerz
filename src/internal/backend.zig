@@ -40,4 +40,10 @@ pub const Backend = union(enum) {
             .v1_17 => v1_17.encodeBootSource(allocator, request),
         };
     }
+
+    pub fn encodeDrive(self: Backend, allocator: std.mem.Allocator, request: models.DriveRequest) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeDrive(allocator, request),
+        };
+    }
 };

@@ -50,22 +50,26 @@ pub const Transport = struct {
     }
 
     pub fn get(self: *Transport, comptime path: []const u8) !Response {
-        return self.request(path, .get, null, null);
+        return self.request("http://localhost" ++ path, .get, null, null);
     }
 
-    pub fn put(self: *Transport, comptime path: []const u8, body: []const u8) !Response {
+    pub fn put(self: *Transport, path: []const u8, body: []const u8) !Response {
         var keys: [1][]const u8 = undefined;
         var values: [1][]const u8 = undefined;
         var hashes: [1]u8 = undefined;
         var headers: dusty.Headers = .{ .keys = &keys, .values = &values, .hashes = &hashes };
         try headers.put("Content-Type", "application/json");
-        return self.request(path, .put, body, &headers);
+        var buffer: [512]u8 = undefined;
+        const url = std.mem.print(&buffer, "http://localhost{s}", .{path}) catch
+            try std.fmt.allocPrint(self.allocator, "http://localhost{s}", .{path});
+        defer if (url.ptr != &buffer) self.allocator.free(url);
+        return self.request(url, .put, body, &headers);
     }
 
-    fn request(self: *Transport, comptime path: []const u8, method: dusty.Method, request_body: ?[]const u8, headers: ?*const dusty.Headers) !Response {
+    fn request(self: *Transport, url: []const u8, method: dusty.Method, request_body: ?[]const u8, headers: ?*const dusty.Headers) !Response {
         // Non-streaming fetch includes the entire body in Dusty's deadline and
         // size limit; body() below only retrieves that already-buffered result.
-        var response = try self.client.fetch("http://localhost" ++ path, .{
+        var response = try self.client.fetch(url, .{
             .method = method,
             .body = request_body,
             .headers = headers,

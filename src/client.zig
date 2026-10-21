@@ -79,6 +79,12 @@ pub const Client = struct {
         return operations.putGuestBootSource(self.allocator, &self.transport, self.backend, request);
     }
 
+    /// Creates or replaces a pre-boot drive. The ID selects both path and body.
+    /// Request strings are borrowed; server paths are not opened locally.
+    pub fn putGuestDrive(self: *Client, request: models.DriveRequest) !results.Result(void) {
+        return operations.putGuestDrive(self.allocator, &self.transport, self.backend, request);
+    }
+
     pub fn deinit(self: *Client) void {
         self.transport.deinit();
         self.discovered.deinit(self.allocator);

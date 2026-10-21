@@ -80,6 +80,20 @@ pub fn build(b: *std.Build) void {
     boot_source_run.addPassthruArgs();
     b.step("boot-source-test", "Configure a disposable boot source (-- SOCKET EXECUTABLE KERNEL INITRD --disposable)").dependOn(&boot_source_run.step);
 
+    const drive = b.addExecutable(.{
+        .name = "drive-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/drive.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "firecrackerz", .module = mod }},
+        }),
+    });
+    check.dependOn(&drive.step);
+    const drive_run = b.addRunArtifact(drive);
+    drive_run.addPassthruArgs();
+    b.step("drive-test", "Configure a disposable root drive (-- SOCKET EXECUTABLE IMAGE --disposable)").dependOn(&drive_run.step);
+
     const examples = b.step("examples", "Build library usage examples");
     inline for (.{"inspect"}) |name| {
         const exe = b.addExecutable(.{

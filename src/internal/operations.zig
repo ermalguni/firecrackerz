@@ -27,7 +27,19 @@ pub fn putGuestBootSource(allocator: std.mem.Allocator, transport: *Transport, b
     return putEmpty(allocator, transport, "/boot-source", body);
 }
 
-fn putEmpty(allocator: std.mem.Allocator, transport: *Transport, comptime path: []const u8, body: []const u8) !results.Result(void) {
+pub fn putGuestDrive(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.DriveRequest) !results.Result(void) {
+    const body = try backend.encodeDrive(allocator, request);
+    defer allocator.free(body);
+    // Escape one segment, not a whole path: IDs cannot inject routes or queries.
+    var buffer: [512]u8 = undefined;
+    const args = .{std.fmt.alt(@as(std.Uri.Component, .{ .raw = request.drive_id }), .formatEscaped)};
+    const path = std.mem.print(&buffer, "/drives/{f}", args) catch
+        try std.fmt.allocPrint(allocator, "/drives/{f}", args);
+    defer if (path.ptr != &buffer) allocator.free(path);
+    return putEmpty(allocator, transport, path, body);
+}
+
+fn putEmpty(allocator: std.mem.Allocator, transport: *Transport, path: []const u8, body: []const u8) !results.Result(void) {
     var response = try transport.put(path, body);
     defer response.deinit();
     if (response.status != 204) return .{ .fault = .{

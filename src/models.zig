@@ -50,3 +50,40 @@ pub const BootSourceRequest = struct {
     boot_args: ?[]const u8 = null,
     initrd_path: ?[]const u8 = null,
 };
+
+/// Pre-boot drive creation/replacement. Strings are borrowed for the call.
+/// Paths and sockets belong to Firecracker's filesystem namespace.
+/// Virtio-block requires path_on_host and is_read_only; vhost-user uses socket.
+/// Firecracker validates device-specific combinations and values.
+pub const DriveRequest = struct {
+    drive_id: []const u8,
+    is_root_device: bool,
+    partuuid: ?[]const u8 = null,
+    cache_type: ?[]const u8 = null,
+    is_read_only: ?bool = null,
+    discard: ?bool = null,
+    path_on_host: ?[]const u8 = null,
+    rate_limiter: ?RateLimiter = null,
+    io_engine: ?[]const u8 = null,
+    blk_size: ?i64 = null,
+    topology: ?BlockTopology = null,
+    socket: ?[]const u8 = null,
+};
+
+pub const RateLimiter = struct {
+    bandwidth: ?TokenBucket = null,
+    ops: ?TokenBucket = null,
+};
+
+pub const TokenBucket = struct {
+    size: i64,
+    refill_time: i64,
+    one_time_burst: ?i64 = null,
+};
+
+pub const BlockTopology = struct {
+    physical_block_exp: ?i64 = null,
+    alignment_offset: ?i64 = null,
+    min_io_size: ?i64 = null,
+    opt_io_size: ?i64 = null,
+};

@@ -4,9 +4,9 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 ## Status and scope
 
-Connection, machine configuration reads/writes, and boot-source configuration are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** These operations have been exercised against real v1.17.0 instances; guest boot is not yet verified.
+Connection, machine configuration reads/writes, boot-source configuration, and drive configuration are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** These operations have been exercised against real v1.17.0 instances; guest boot is not yet verified.
 
-Device configuration, action methods, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
+Other device configuration, action methods, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
 The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, and VM/process lifecycle remain application responsibilities.
 
@@ -134,6 +134,35 @@ switch (boot_source) {
 
 The return type is `Result(void)`: HTTP 204 succeeds, other statuses preserve the raw fault body, and transport/allocation failures return Zig errors. The existing timeout, size limit, and no-retry policy apply. Successful configuration is not proof of a bootable kernel/initramfs combination; this method does not send `InstanceStart`.
 
+### Configuring a drive
+
+On a connected, **pre-boot** instance:
+
+```zig
+var drive = try client.putGuestDrive(.{
+    .drive_id = "rootfs",
+    .is_root_device = true,
+    .path_on_host = "/images/rootfs.ext4",
+    .is_read_only = true,
+});
+defer drive.deinit();
+
+switch (drive) {
+    .success => {},
+    .fault => |fault| std.log.err("Drive rejected: HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+`models.DriveRequest` requires `drive_id` and `is_root_device`. Virtio-block also requires `path_on_host` and `is_read_only`; vhost-user-block uses `socket` instead. Firecracker validates backend-specific combinations. Optional fields are `partuuid`, `cache_type`, `is_read_only`, `discard`, `path_on_host`, `rate_limiter`, `io_engine`, `blk_size`, `topology`, and `socket`. Cache and engine strings use the upstream values (`Unsafe`/`Writeback`, `Sync`/`Async`).
+
+`RateLimiter` contains optional `bandwidth` and `ops` token buckets. Each `TokenBucket` requires `size` and `refill_time` (milliseconds), with optional `one_time_burst`. `BlockTopology` contains optional `physical_block_exp`, `alignment_offset`, `min_io_size`, and `opt_io_size`. Null fields are omitted recursively; explicit false, zero, empty strings, and empty nested objects are preserved. All supplied fields are encoded, not silently discarded.
+
+`PUT /drives/{drive_id}` creates or replaces the identified drive, not a partial update. The same ID supplies the path and JSON body. It is percent-escaped as a single URL segment so delimiters cannot inject another route or query; escaping does not make an invalid Firecracker ID valid. Use ASCII letters, digits, and underscores for portable IDs. Invalid IDs and configurations remain server HTTP faults.
+
+Strings are borrowed for the call. Image and socket paths belong to the **Firecracker process's filesystem namespace**; the client does not open, upload, or rewrite them. The return type is `Result(void)`: HTTP 204 succeeds, other statuses preserve owned raw faults, and transport/allocation errors remain Zig errors. Existing timeouts, response limits, and the no-retry policy apply. Configuration does not format a disk, check for a guest filesystem, or start the guest.
+
 
 ### Connection behavior
 
@@ -165,13 +194,14 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 | --- | --- |
 | `zig build` / `zig build check` | Compile library tests, protocol and configuration runners, and inspection example |
 | `zig build test` | Run version and discovery unit tests |
-| `zig build protocol` | Run local Unix-socket connection, machine/boot-source configuration, and subprocess discovery scenarios |
+| `zig build protocol` | Run local Unix-socket connection, machine/boot-source/drive configuration, and subprocess discovery scenarios |
 | `zig build discovery-test` | Run the same combined protocol scenarios |
 | `zig build examples` | Build and install the inspection example |
 | `zig build inspect -- SOCKET EXECUTABLE` | Print verified metadata and current machine configuration |
 | `zig build integration -- SOCKET EXECUTABLE` | Run the inspection example against a disposable real instance |
 | `zig build configure-test -- SOCKET EXECUTABLE --disposable` | Mutate a disposable pre-boot instance; verify readback, optional-field reset, and invalid-update rejection |
 | `zig build boot-source-test -- SOCKET EXECUTABLE KERNEL INITRD --disposable` | Configure a disposable pre-boot instance; exercise optional arguments, replacement, and invalid paths without starting a guest |
+| `zig build drive-test -- SOCKET EXECUTABLE IMAGE --disposable` | Configure a disposable root drive; exercise replacement, invalid paths, and invalid configuration without starting a guest |
 | `zig build codegen` | Regenerate version-specific wire models |
 
 Protocol scenarios cover explicit and PATH discovery, supported versions, content-length and chunked responses, version mismatch, preserved HTTP faults, malformed JSON, socket absence, oversized responses, request and discovery timeouts, malformed executable output, process failure, and unsupported releases.
@@ -182,11 +212,15 @@ PUT scenarios verify omitted versus explicit optional fields, JSON content type 
 
 Boot-source scenarios additionally verify JSON escaping for paths and arguments, omitted optional fields versus explicit empty arguments, and the `/boot-source` endpoint. Live verification used `/boot/vmlinuz-linux` and the readable `/boot/amd-ucode.img` early initramfs; the root-only `/boot/initramfs-linux.img` produced a preserved HTTP 400 permission fault. This verifies API configuration, not guest boot or a complete guest userspace.
 
+Drive scenarios additionally cover all optional and nested fields, omitted versus explicit zero/false/empty values, socket-only request encoding, and escaped/empty IDs. Live verification on v1.17.0 used a disposable 4 MiB regular backing file: root-drive creation and replacement succeeded, an invalid image child path and negative block size returned owned HTTP 400 faults, and `/vm/config` readback confirmed the restored root drive. This proves configuration, not a bootable filesystem. Vhost-user request encoding is covered locally; a live vhost-user backend was not exercised.
+
 Use a disposable instance for general integration checks. The inspection example sends only `GET /version` and `GET /machine-config`; it does not configure or boot a guest.
 
 `configure-test` **writes** configuration and requires the `--disposable` acknowledgement. Never point it at an instance you need to preserve. It sets configuration twice and submits an invalid update to verify rejection leaves prior state intact.
 
 `boot-source-test` also **writes** and requires `--disposable`. It accepts kernel/initrd paths in the server's filesystem, exercises valid and invalid replacements, and leaves the kernel configured with empty boot arguments and no initrd. Use regular image files as its inputs. It never starts the guest.
+
+`drive-test` **writes** and requires `--disposable`. Supply a regular image file readable by Firecracker. It creates/replaces the `rootfs` drive, checks invalid updates, and leaves a read-only root drive with optional settings omitted. It never starts the guest.
 
 ## Architecture
 

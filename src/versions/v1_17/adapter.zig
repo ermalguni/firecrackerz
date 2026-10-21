@@ -48,3 +48,38 @@ pub fn encodeBootSource(allocator: std.mem.Allocator, request: models.BootSource
     };
     return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
 }
+
+pub fn encodeDrive(allocator: std.mem.Allocator, request: models.DriveRequest) ![]u8 {
+    const value: wire.Drive = .{
+        .drive_id = request.drive_id,
+        .is_root_device = request.is_root_device,
+        .partuuid = request.partuuid,
+        .cache_type = request.cache_type,
+        .is_read_only = request.is_read_only,
+        .discard = request.discard,
+        .path_on_host = request.path_on_host,
+        .rate_limiter = if (request.rate_limiter) |limiter| .{
+            .bandwidth = encodeTokenBucket(limiter.bandwidth),
+            .ops = encodeTokenBucket(limiter.ops),
+        } else null,
+        .io_engine = request.io_engine,
+        .blk_size = request.blk_size,
+        .topology = if (request.topology) |topology| .{
+            .physical_block_exp = topology.physical_block_exp,
+            .alignment_offset = topology.alignment_offset,
+            .min_io_size = topology.min_io_size,
+            .opt_io_size = topology.opt_io_size,
+        } else null,
+        .socket = request.socket,
+    };
+    return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+}
+
+fn encodeTokenBucket(bucket: ?models.TokenBucket) ?wire.TokenBucket {
+    const value = bucket orelse return null;
+    return .{
+        .size = value.size,
+        .refill_time = value.refill_time,
+        .one_time_burst = value.one_time_burst,
+    };
+}
