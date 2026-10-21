@@ -85,6 +85,13 @@ pub const Client = struct {
         return operations.putGuestDrive(self.allocator, &self.transport, self.backend, request);
     }
 
+    /// Starts the configured microVM once. Success is not guest readiness.
+    /// Never retried: a timeout/disconnect can leave the VM running.
+    /// Firecracker validates configuration and lifecycle; no local state is cached.
+    pub fn startInstance(self: *Client) !results.Result(void) {
+        return operations.startInstance(self.allocator, &self.transport);
+    }
+
     pub fn deinit(self: *Client) void {
         self.transport.deinit();
         self.discovered.deinit(self.allocator);

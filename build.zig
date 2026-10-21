@@ -95,7 +95,7 @@ pub fn build(b: *std.Build) void {
     b.step("drive-test", "Configure a disposable root drive (-- SOCKET EXECUTABLE IMAGE --disposable)").dependOn(&drive_run.step);
 
     const examples = b.step("examples", "Build library usage examples");
-    inline for (.{"inspect"}) |name| {
+    inline for (.{ "inspect", "configure_and_start" }) |name| {
         const exe = b.addExecutable(.{
             .name = name,
             .root_module = b.createModule(.{
@@ -110,6 +110,8 @@ pub fn build(b: *std.Build) void {
         const run = b.addRunArtifact(exe);
         run.addPassthruArgs();
         b.step(name, "Run the " ++ name ++ " example").dependOn(&run.step);
-        b.step("integration", "Inspect a disposable instance (pass -- SOCKET EXECUTABLE)").dependOn(&run.step);
+        if (comptime std.mem.eql(u8, name, "inspect")) {
+            b.step("integration", "Inspect a disposable instance (pass -- SOCKET EXECUTABLE)").dependOn(&run.step);
+        }
     }
 }

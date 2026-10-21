@@ -39,6 +39,11 @@ pub fn putGuestDrive(allocator: std.mem.Allocator, transport: *Transport, backen
     return putEmpty(allocator, transport, path, body);
 }
 
+pub fn startInstance(allocator: std.mem.Allocator, transport: *Transport) !results.Result(void) {
+    // Identical for supported contracts. A fixed action needs no request allocation.
+    return putEmpty(allocator, transport, "/actions", "{\"action_type\":\"InstanceStart\"}");
+}
+
 fn putEmpty(allocator: std.mem.Allocator, transport: *Transport, path: []const u8, body: []const u8) !results.Result(void) {
     var response = try transport.put(path, body);
     defer response.deinit();

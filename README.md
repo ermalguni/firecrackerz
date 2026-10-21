@@ -4,11 +4,11 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 ## Status and scope
 
-Connection, machine configuration reads/writes, boot-source configuration, and drive configuration are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** These operations have been exercised against real v1.17.0 instances; guest boot is not yet verified.
+Connection, machine configuration reads/writes, boot-source configuration, drive configuration, and instance start are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `startInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
 
-Other device configuration, action methods, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
+Other device configuration, other action methods, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
-The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, and VM/process lifecycle remain application responsibilities.
+The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, guest readiness checks, and process cleanup remain application responsibilities.
 
 ## Requirements
 
@@ -163,6 +163,28 @@ switch (drive) {
 
 Strings are borrowed for the call. Image and socket paths belong to the **Firecracker process's filesystem namespace**; the client does not open, upload, or rewrite them. The return type is `Result(void)`: HTTP 204 succeeds, other statuses preserve owned raw faults, and transport/allocation errors remain Zig errors. Existing timeouts, response limits, and the no-retry policy apply. Configuration does not format a disk, check for a guest filesystem, or start the guest.
 
+### Starting the instance
+
+After configuring the machine, boot source, and any required devices:
+
+```zig
+var started = try client.startInstance();
+defer started.deinit();
+
+switch (started) {
+    .success => std.log.info("Instance start accepted", .{}),
+    .fault => |fault| std.log.err("Start rejected: HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+This sends `PUT /actions` with `{"action_type":"InstanceStart"}` and returns `Result(void)`. HTTP 204 succeeds without JSON decoding; every other status preserves an owned raw fault. Transport/allocation failures remain Zig errors. Firecracker validates configuration and lifecycle: a successful start is allowed only once, and missing boot configuration or a repeated start is rejected. The client does not cache a running flag or suppress subsequent requests.
+
+**There are no automatic retries.** A timeout or disconnect after sending the action does not establish whether the VM started. Inspect Firecracker's live state (`GET /`, outside the current client API) before deciding what to do; `client.info()` is cached connection metadata, not VM state. Existing request timeouts and response limits apply.
+
+Success means Firecracker accepted startup, not that the guest reached userspace or that an application is ready. A disk-backed guest needs a bootable root filesystem; an initramfs-only guest need not have a root drive. Destroying the client closes client resources; it does not stop the VM or terminate Firecracker.
+
 
 ### Connection behavior
 
@@ -181,7 +203,7 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 
 - Ordinary Zig errors represent local failures: discovery, unsupported versions, allocation, timeout, transport, malformed responses, and `VersionMismatch`.
 - Discovery distinguishes `ExecutableNotFound`, `NotExecutable`, `InvalidExecutablePath`, `ProcessFailed`, `InvalidVersionOutput`, `OutputTooLong`, `UnsupportedVersion`, and `PrereleaseVersion`.
-- Responses outside the operation's expected status (200 for reads, 204 for configuration writes) return `.fault` with owned raw body and numeric status. Oversized or unreadable fault bodies remain transport errors.
+- Responses outside the operation's expected status (200 for reads, 204 for configuration writes and instance start) return `.fault` with owned raw body and numeric status. Oversized or unreadable fault bodies remain transport errors.
 - `Result(Client).deinit()` releases either its client or its HTTP fault. Do not also deinitialize the contained client.
 - Clients and results are owning values: do not copy them or deinitialize them twice.
 - The allocator and I/O runtime must outlive the client. Metadata strings are borrowed until client destruction.
@@ -192,16 +214,17 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 
 | Command | Purpose |
 | --- | --- |
-| `zig build` / `zig build check` | Compile library tests, protocol and configuration runners, and inspection example |
+| `zig build` / `zig build check` | Compile library tests, protocol and configuration runners, and examples |
 | `zig build test` | Run version and discovery unit tests |
-| `zig build protocol` | Run local Unix-socket connection, machine/boot-source/drive configuration, and subprocess discovery scenarios |
+| `zig build protocol` | Run local Unix-socket connection, configuration, instance-start, and subprocess discovery scenarios |
 | `zig build discovery-test` | Run the same combined protocol scenarios |
-| `zig build examples` | Build and install the inspection example |
+| `zig build examples` | Build and install the inspection and configure-and-start examples |
 | `zig build inspect -- SOCKET EXECUTABLE` | Print verified metadata and current machine configuration |
 | `zig build integration -- SOCKET EXECUTABLE` | Run the inspection example against a disposable real instance |
 | `zig build configure-test -- SOCKET EXECUTABLE --disposable` | Mutate a disposable pre-boot instance; verify readback, optional-field reset, and invalid-update rejection |
 | `zig build boot-source-test -- SOCKET EXECUTABLE KERNEL INITRD --disposable` | Configure a disposable pre-boot instance; exercise optional arguments, replacement, and invalid paths without starting a guest |
 | `zig build drive-test -- SOCKET EXECUTABLE IMAGE --disposable` | Configure a disposable root drive; exercise replacement, invalid paths, and invalid configuration without starting a guest |
+| `zig build configure_and_start -- SOCKET EXECUTABLE KERNEL ROOTFS --disposable` | Configure 1 vCPU, 128 MiB, kernel, and read-only root drive, then start a disposable guest |
 | `zig build codegen` | Regenerate version-specific wire models |
 
 Protocol scenarios cover explicit and PATH discovery, supported versions, content-length and chunked responses, version mismatch, preserved HTTP faults, malformed JSON, socket absence, oversized responses, request and discovery timeouts, malformed executable output, process failure, and unsupported releases.
@@ -214,6 +237,8 @@ Boot-source scenarios additionally verify JSON escaping for paths and arguments,
 
 Drive scenarios additionally cover all optional and nested fields, omitted versus explicit zero/false/empty values, socket-only request encoding, and escaped/empty IDs. Live verification on v1.17.0 used a disposable 4 MiB regular backing file: root-drive creation and replacement succeeded, an invalid image child path and negative block size returned owned HTTP 400 faults, and `/vm/config` readback confirmed the restored root drive. This proves configuration, not a bootable filesystem. Vhost-user request encoding is covered locally; a live vhost-user backend was not exercised.
 
+Instance-start protocol scenarios cover the action payload, empty 204 success, owned faults surviving client destruction, unexpected 200 responses, timeouts, disconnects, oversized faults, and absence of automatic retries. Live verification used Firecracker v1.17.0, the upstream CI x86_64 kernel `firecracker-ci/20261021-1e5fcc27b59f-0/x86_64/vmlinux-6.1.188`, and a temporary ext4 root filesystem with a static minimal init program. The configure-and-start example succeeded, `GET /` reported `Running`, and serial output confirmed the init program ran. Direct API probes rejected unconfigured and repeated starts with HTTP 400. This is a minimal boot smoke check, not verification of a production guest or application.
+
 Use a disposable instance for general integration checks. The inspection example sends only `GET /version` and `GET /machine-config`; it does not configure or boot a guest.
 
 `configure-test` **writes** configuration and requires the `--disposable` acknowledgement. Never point it at an instance you need to preserve. It sets configuration twice and submits an invalid update to verify rejection leaves prior state intact.
@@ -221,6 +246,8 @@ Use a disposable instance for general integration checks. The inspection example
 `boot-source-test` also **writes** and requires `--disposable`. It accepts kernel/initrd paths in the server's filesystem, exercises valid and invalid replacements, and leaves the kernel configured with empty boot arguments and no initrd. Use regular image files as its inputs. It never starts the guest.
 
 `drive-test` **writes** and requires `--disposable`. Supply a regular image file readable by Firecracker. It creates/replaces the `rootfs` drive, checks invalid updates, and leaves a read-only root drive with optional settings omitted. It never starts the guest.
+
+`configure_and_start` **writes configuration and starts the guest**; it requires `--disposable`. Supply an uncompressed guest kernel and a bootable root filesystem readable in Firecracker's namespace. The example uses a read-only root drive and `console=ttyS0 reboot=k panic=0`; a panicking guest remains stopped in the panic handler rather than rebooting automatically. The caller owns readiness checks and shutdown/cleanup. Configuration is sequential and is not rolled back if a later request fails.
 
 ## Architecture
 
