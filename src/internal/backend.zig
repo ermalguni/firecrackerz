@@ -34,4 +34,10 @@ pub const Backend = union(enum) {
             .v1_17 => v1_17.encodeMachineConfiguration(allocator, request),
         };
     }
+
+    pub fn encodeBootSource(self: Backend, allocator: std.mem.Allocator, request: models.BootSourceRequest) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeBootSource(allocator, request),
+        };
+    }
 };

@@ -4,9 +4,9 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 ## Status and scope
 
-Connection and machine configuration reads/writes are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getMachineConfiguration()`, `putMachineConfiguration()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** Connection, configuration updates, and readback have been exercised against real v1.17.0 instances.
+Connection, machine configuration reads/writes, and boot-source configuration are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** These operations have been exercised against real v1.17.0 instances; guest boot is not yet verified.
 
-Boot-source/device configuration, action methods, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
+Device configuration, action methods, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
 The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, and VM/process lifecycle remain application responsibilities.
 
@@ -108,6 +108,33 @@ This is `PUT /machine-config`, **not PATCH**. Omitted optional settings reset to
 
 The return type is `Result(void)`: HTTP 204 succeeds without JSON decoding; every other status is preserved as an owned fault. Call `updated.deinit()` even for a void success. Transport/allocation errors remain Zig errors. Requests use the existing timeout and response-size limit and are never automatically retried. A timeout or disconnect after sending a write does not prove the server rejected it; read back state before deciding whether to retry.
 
+### Configuring the boot source
+
+On a connected, **pre-boot** instance:
+
+```zig
+var boot_source = try client.putGuestBootSource(.{
+    .kernel_image_path = "/images/vmlinux",
+    .boot_args = "console=ttyS0 reboot=k panic=1",
+    .initrd_path = "/images/initramfs",
+});
+defer boot_source.deinit();
+
+switch (boot_source) {
+    .success => {},
+    .fault => |fault| std.log.err("Boot source rejected: HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+`models.BootSourceRequest` requires `kernel_image_path`; `boot_args` and `initrd_path` default to null and are omitted from JSON. Explicit empty strings are preserved. All strings are borrowed for the call.
+
+`PUT /boot-source` creates or replaces the boot source, not a partial update. Paths are interpreted by the **Firecracker process**, including its jailer/chroot filesystem namespace; the client does not open, upload, or rewrite the files. They must be readable by that process. Firecracker handles path, argument, and lifecycle validation and returns any rejection as an owned HTTP fault.
+
+The return type is `Result(void)`: HTTP 204 succeeds, other statuses preserve the raw fault body, and transport/allocation failures return Zig errors. The existing timeout, size limit, and no-retry policy apply. Successful configuration is not proof of a bootable kernel/initramfs combination; this method does not send `InstanceStart`.
+
+
 ### Connection behavior
 
 1. Resolve the executable to an absolute path and check executability.
@@ -138,12 +165,13 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 | --- | --- |
 | `zig build` / `zig build check` | Compile library tests, protocol and configuration runners, and inspection example |
 | `zig build test` | Run version and discovery unit tests |
-| `zig build protocol` | Run local Unix-socket connection, machine configuration, and subprocess discovery scenarios |
+| `zig build protocol` | Run local Unix-socket connection, machine/boot-source configuration, and subprocess discovery scenarios |
 | `zig build discovery-test` | Run the same combined protocol scenarios |
 | `zig build examples` | Build and install the inspection example |
 | `zig build inspect -- SOCKET EXECUTABLE` | Print verified metadata and current machine configuration |
 | `zig build integration -- SOCKET EXECUTABLE` | Run the inspection example against a disposable real instance |
 | `zig build configure-test -- SOCKET EXECUTABLE --disposable` | Mutate a disposable pre-boot instance; verify readback, optional-field reset, and invalid-update rejection |
+| `zig build boot-source-test -- SOCKET EXECUTABLE KERNEL INITRD --disposable` | Configure a disposable pre-boot instance; exercise optional arguments, replacement, and invalid paths without starting a guest |
 | `zig build codegen` | Regenerate version-specific wire models |
 
 Protocol scenarios cover explicit and PATH discovery, supported versions, content-length and chunked responses, version mismatch, preserved HTTP faults, malformed JSON, socket absence, oversized responses, request and discovery timeouts, malformed executable output, process failure, and unsupported releases.
@@ -152,9 +180,13 @@ Machine configuration scenarios additionally cover a fresh connection after the 
 
 PUT scenarios verify omitted versus explicit optional fields, JSON content type and request body, empty HTTP 204 success, unexpected statuses, owned fault bodies, timeouts, disconnects, and oversized fault responses.
 
+Boot-source scenarios additionally verify JSON escaping for paths and arguments, omitted optional fields versus explicit empty arguments, and the `/boot-source` endpoint. Live verification used `/boot/vmlinuz-linux` and the readable `/boot/amd-ucode.img` early initramfs; the root-only `/boot/initramfs-linux.img` produced a preserved HTTP 400 permission fault. This verifies API configuration, not guest boot or a complete guest userspace.
+
 Use a disposable instance for general integration checks. The inspection example sends only `GET /version` and `GET /machine-config`; it does not configure or boot a guest.
 
 `configure-test` **writes** configuration and requires the `--disposable` acknowledgement. Never point it at an instance you need to preserve. It sets configuration twice and submits an invalid update to verify rejection leaves prior state intact.
+
+`boot-source-test` also **writes** and requires `--disposable`. It accepts kernel/initrd paths in the server's filesystem, exercises valid and invalid replacements, and leaves the kernel configured with empty boot arguments and no initrd. Use regular image files as its inputs. It never starts the guest.
 
 ## Architecture
 

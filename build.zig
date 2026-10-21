@@ -66,6 +66,20 @@ pub fn build(b: *std.Build) void {
     configure_run.addPassthruArgs();
     b.step("configure-test", "Write/read a disposable instance (-- SOCKET EXECUTABLE --disposable)").dependOn(&configure_run.step);
 
+    const boot_source = b.addExecutable(.{
+        .name = "boot-source-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/boot_source.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "firecrackerz", .module = mod }},
+        }),
+    });
+    check.dependOn(&boot_source.step);
+    const boot_source_run = b.addRunArtifact(boot_source);
+    boot_source_run.addPassthruArgs();
+    b.step("boot-source-test", "Configure a disposable boot source (-- SOCKET EXECUTABLE KERNEL INITRD --disposable)").dependOn(&boot_source_run.step);
+
     const examples = b.step("examples", "Build library usage examples");
     inline for (.{"inspect"}) |name| {
         const exe = b.addExecutable(.{

@@ -73,6 +73,12 @@ pub const Client = struct {
         return operations.putMachineConfiguration(self.allocator, &self.transport, self.backend, request);
     }
 
+    /// Creates or replaces the pre-boot source. Paths belong to the server's
+    /// filesystem namespace. Request strings are borrowed; no automatic retries.
+    pub fn putGuestBootSource(self: *Client, request: models.BootSourceRequest) !results.Result(void) {
+        return operations.putGuestBootSource(self.allocator, &self.transport, self.backend, request);
+    }
+
     pub fn deinit(self: *Client) void {
         self.transport.deinit();
         self.discovered.deinit(self.allocator);

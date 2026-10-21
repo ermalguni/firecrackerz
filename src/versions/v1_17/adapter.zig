@@ -39,3 +39,12 @@ pub fn encodeMachineConfiguration(allocator: std.mem.Allocator, request: models.
     };
     return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
 }
+
+pub fn encodeBootSource(allocator: std.mem.Allocator, request: models.BootSourceRequest) ![]u8 {
+    const value: wire.BootSource = .{
+        .kernel_image_path = request.kernel_image_path,
+        .boot_args = request.boot_args,
+        .initrd_path = request.initrd_path,
+    };
+    return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+}
