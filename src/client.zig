@@ -192,6 +192,31 @@ pub const Client = struct {
         return operations.getMemoryHotplug(self.allocator, &self.transport, self.backend);
     }
 
+    /// Configures MMDS before boot, not its metadata contents. Interface IDs must
+    /// already exist. Request data is borrowed; Firecracker validates values.
+    /// Null options are omitted. No automatic retries.
+    pub fn putMmdsConfiguration(self: *Client, request: models.MmdsConfiguration) !results.Result(void) {
+        return operations.putMmdsConfiguration(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Reads owned metadata, not MMDS configuration. Nested JSON data may outlive
+    /// the client, but not the allocator. Release the enclosing result once.
+    pub fn getMmds(self: *Client) !results.Result(models.MmdsContents) {
+        return operations.getMmds(self.allocator, &self.transport);
+    }
+
+    /// Replaces the entire metadata store with borrowed JSON text.
+    /// Firecracker validates the document. No automatic retries.
+    pub fn putMmds(self: *Client, json: []const u8) !results.Result(void) {
+        return operations.putMmds(self.allocator, &self.transport, json);
+    }
+
+    /// Applies a JSON merge patch to the existing metadata store.
+    /// JSON text is borrowed; Firecracker merges and validates. No retries.
+    pub fn patchMmds(self: *Client, json: []const u8) !results.Result(void) {
+        return operations.patchMmds(self.allocator, &self.transport, json);
+    }
+
     /// Configures Firecracker logging; does not create or read the destination.
     /// Request data is borrowed during the call. No automatic retries.
     pub fn putLogger(self: *Client, request: models.LoggerRequest) !results.Result(void) {

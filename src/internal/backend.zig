@@ -149,6 +149,12 @@ pub const Backend = union(enum) {
         };
     }
 
+    pub fn encodeMmdsConfiguration(self: Backend, allocator: std.mem.Allocator, request: models.MmdsConfiguration) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeMmdsConfiguration(allocator, request),
+        };
+    }
+
     pub fn encodeLogger(self: Backend, allocator: std.mem.Allocator, request: models.LoggerRequest) ![]u8 {
         return switch (self) {
             .v1_17 => v1_17.encodeLogger(allocator, request),

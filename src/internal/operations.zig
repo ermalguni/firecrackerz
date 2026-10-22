@@ -244,6 +244,44 @@ pub fn getMemoryHotplug(allocator: std.mem.Allocator, transport: *Transport, bac
     return .{ .success = try backend.decodeMemoryHotplugStatus(allocator, response.body) };
 }
 
+pub fn putMmdsConfiguration(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.MmdsConfiguration) !results.Result(void) {
+    const body = try backend.encodeMmdsConfiguration(allocator, request);
+    defer allocator.free(body);
+    return putEmpty(allocator, transport, "/mmds/config", body);
+}
+
+pub fn getMmds(allocator: std.mem.Allocator, transport: *Transport) !results.Result(models.MmdsContents) {
+    var response = try transport.get("/mmds");
+    defer response.deinit();
+    if (response.status != 200) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    // Arbitrary JSON has no version-specific wire conversion. Own every string,
+    // including number lexemes, before releasing the transport response.
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, response.body, .{
+        .allocate = .alloc_always,
+        .parse_numbers = false,
+    });
+    return .{ .success = .{ .value = parsed.value, .arena = parsed.arena } };
+}
+
+pub fn putMmds(allocator: std.mem.Allocator, transport: *Transport, json: []const u8) !results.Result(void) {
+    return putEmpty(allocator, transport, "/mmds", json);
+}
+
+pub fn patchMmds(allocator: std.mem.Allocator, transport: *Transport, json: []const u8) !results.Result(void) {
+    var response = try transport.patch("/mmds", json);
+    defer response.deinit();
+    if (response.status != 204) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = {} };
+}
+
 pub fn putLogger(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.LoggerRequest) !results.Result(void) {
     const body = try backend.encodeLogger(allocator, request);
     defer allocator.free(body);

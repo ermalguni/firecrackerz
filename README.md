@@ -853,6 +853,111 @@ statuses, timeout, disconnect, oversized responses, and no retries.
 See the [v1.17 virtio-mem guide](https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/memory-hotplug.md)
 for guest kernel requirements, memory onlining, and hot-removal constraints.
 
+### Configuring MMDS
+
+`putMmdsConfiguration()` sends `PUT /mmds/config` before boot, reusing
+`models.MmdsConfiguration` from `getVmConfiguration()`.
+
+```zig
+var configured = try client.putMmdsConfiguration(.{
+    .network_interfaces = &.{"eth0"},
+    .version = "V2",
+    .ipv4_address = "169.254.169.254",
+    .imds_compat = false,
+});
+defer configured.deinit();
+switch (configured) {
+    .success => {},
+    .fault => |fault| std.debug.print("MMDS configuration failed: HTTP {d}: {s}\n", .{ fault.status, fault.body }),
+}
+```
+
+Configure the referenced network interfaces first. Firecracker v1.17.0 rejects
+empty interface lists and unknown IDs. Optional `version`, `ipv4_address`, and
+`imds_compat` fields are omitted when null; explicit false and empty values are
+sent unchanged for Firecracker to validate. The pinned schema lists V1/V2,
+a link-local IPv4 address, and EC2 IMDS compatibility. Strings and interface
+slices are borrowed only during the call.
+
+Only HTTP 204 is success; other statuses return owned raw faults. Transport and
+allocation failures remain Zig errors. Existing deadlines and response limits
+apply, with no automatic retries. This configures the metadata service, not
+metadata contents, host networking, or guest readiness.
+
+Live verification on Firecracker v1.17.0 used a disposable TAP in an isolated
+user/network namespace: V2, a custom address, and IMDS compatibility were
+confirmed through `getVmConfiguration()`. A subsequent request with omitted
+options and explicit `imds_compat = false` succeeded and read back false.
+Unknown and empty interface lists returned HTTP 400. Guest metadata access
+was not exercised.
+
+### Reading and updating metadata
+
+`getMmds()`, `putMmds(json)`, and `patchMmds(json)` access the `/mmds`
+data store, independently of `putMmdsConfiguration()`.
+
+```zig
+var replaced = try client.putMmds(
+    \\{"service":{"name":"worker","obsolete":true},"ports":[8080]}
+);
+defer replaced.deinit();
+switch (replaced) {
+    .success => {},
+    .fault => |fault| {
+        std.debug.print("MMDS replacement: HTTP {d}: {s}\n", .{ fault.status, fault.body });
+        return;
+    },
+}
+
+var patched = try client.patchMmds(
+    \\{"service":{"obsolete":null,"ready":true}}
+);
+defer patched.deinit();
+switch (patched) {
+    .success => {},
+    .fault => |fault| {
+        std.debug.print("MMDS patch: HTTP {d}: {s}\n", .{ fault.status, fault.body });
+        return;
+    },
+}
+
+var metadata = try client.getMmds();
+defer metadata.deinit();
+switch (metadata) {
+    .success => |contents| {
+        const json = try std.json.Stringify.valueAlloc(allocator, contents.value, .{});
+        defer allocator.free(json);
+        std.debug.print("{s}\n", .{json});
+    },
+    .fault => |fault| std.debug.print("MMDS read: HTTP {d}: {s}\n", .{ fault.status, fault.body }),
+}
+```
+
+Writes borrow JSON text for the call and send it unchanged: no local parsing,
+re-encoding, or merge. Firecracker validates the document. PUT replaces the
+entire store; PATCH merges objects recursively, removes members whose patch
+value is null, and replaces arrays rather than concatenating them. Initialize
+the store with PUT before PATCH; v1.17.0 returns HTTP 400 for an uninitialized
+patch. Neither operation configures network interfaces or enables guest access.
+
+GET accepts HTTP 200 and returns `models.MmdsContents`, an owned
+`std.json.Value` tree. Keys, strings, arrays, objects, and number lexemes remain
+valid across subsequent requests and client destruction, until result
+`deinit()`. Its allocator must remain alive. Numbers use `.number_string`
+to preserve precision; convert explicitly when numeric computation is needed.
+Do not deinitialize nested values separately.
+
+PUT/PATCH accept only HTTP 204. Other statuses, including validation failures,
+are owned raw HTTP faults. Transport, allocation, and GET JSON decoding failures
+are Zig errors. Existing deadlines and response-size limits apply. No automatic
+retries: a failed connection or timeout can follow an applied write.
+
+Live Firecracker v1.17.0 verification covered replacement, recursive merge and
+null deletion, array replacement, explicit null storage, escaped strings, a
+64-bit unsigned integer without precision loss, and results retained across
+later requests and client destruction. Invalid JSON and an uninitialized PATCH
+returned HTTP 400. Guest-side metadata retrieval was not exercised.
+
 ### Configuring logs and metrics
 
 Configure destinations before starting the guest:

@@ -274,6 +274,16 @@ pub fn decodeMemoryHotplugStatus(allocator: std.mem.Allocator, body: []const u8)
     };
 }
 
+pub fn encodeMmdsConfiguration(allocator: std.mem.Allocator, request: models.MmdsConfiguration) ![]u8 {
+    const value: wire.MmdsConfig = .{
+        .network_interfaces = request.network_interfaces,
+        .version = request.version,
+        .imds_compat = request.imds_compat,
+        .ipv4_address = request.ipv4_address,
+    };
+    return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+}
+
 pub fn encodeLogger(allocator: std.mem.Allocator, request: models.LoggerRequest) ![]u8 {
     const value: wire.Logger = .{
         .log_path = request.log_path,
