@@ -128,6 +128,122 @@ pub fn patchGuestNetworkInterface(allocator: std.mem.Allocator, transport: *Tran
     return .{ .success = {} };
 }
 
+pub fn getBalloon(allocator: std.mem.Allocator, transport: *Transport, backend: Backend) !results.Result(models.BalloonConfiguration) {
+    var response = try transport.get("/balloon");
+    defer response.deinit();
+    if (response.status != 200) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = try backend.decodeBalloon(allocator, response.body) };
+}
+
+pub fn getBalloonStatistics(allocator: std.mem.Allocator, transport: *Transport, backend: Backend) !results.Result(models.BalloonStatistics) {
+    var response = try transport.get("/balloon/statistics");
+    defer response.deinit();
+    if (response.status != 200) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = try backend.decodeBalloonStatistics(allocator, response.body) };
+}
+
+pub fn putBalloon(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.BalloonConfiguration) !results.Result(void) {
+    const body = try backend.encodeBalloon(allocator, request);
+    defer allocator.free(body);
+    return putEmpty(allocator, transport, "/balloon", body);
+}
+
+pub fn patchBalloon(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.BalloonUpdate) !results.Result(void) {
+    const body = try backend.encodeBalloonUpdate(allocator, request);
+    defer allocator.free(body);
+    var response = try transport.patch("/balloon", body);
+    defer response.deinit();
+    if (response.status != 204) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = {} };
+}
+
+pub fn patchBalloonStatistics(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.BalloonStatisticsUpdate) !results.Result(void) {
+    const body = try backend.encodeBalloonStatisticsUpdate(allocator, request);
+    defer allocator.free(body);
+    var response = try transport.patch("/balloon/statistics", body);
+    defer response.deinit();
+    if (response.status != 204) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = {} };
+}
+
+pub fn startBalloonHinting(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.BalloonHintingStartRequest) !results.Result(void) {
+    const body = try backend.encodeBalloonHintingStart(allocator, request);
+    defer allocator.free(body);
+    return patchHinting(allocator, transport, "/balloon/hinting/start", body);
+}
+
+pub fn stopBalloonHinting(allocator: std.mem.Allocator, transport: *Transport) !results.Result(void) {
+    return patchHinting(allocator, transport, "/balloon/hinting/stop", "");
+}
+
+fn patchHinting(allocator: std.mem.Allocator, transport: *Transport, path: []const u8, body: []const u8) !results.Result(void) {
+    var response = try transport.patch(path, body);
+    defer response.deinit();
+    if (response.status != 204) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = {} };
+}
+
+pub fn getBalloonHintingStatus(allocator: std.mem.Allocator, transport: *Transport, backend: Backend) !results.Result(models.BalloonHintingStatus) {
+    var response = try transport.get("/balloon/hinting/status");
+    defer response.deinit();
+    if (response.status != 200) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = try backend.decodeBalloonHintingStatus(allocator, response.body) };
+}
+
+pub fn putMemoryHotplug(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.MemoryHotplugConfiguration) !results.Result(void) {
+    const body = try backend.encodeMemoryHotplug(allocator, request);
+    defer allocator.free(body);
+    return putEmpty(allocator, transport, "/hotplug/memory", body);
+}
+
+pub fn patchMemoryHotplug(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.MemoryHotplugUpdate) !results.Result(void) {
+    const body = try backend.encodeMemoryHotplugUpdate(allocator, request);
+    defer allocator.free(body);
+    var response = try transport.patch("/hotplug/memory", body);
+    defer response.deinit();
+    if (response.status != 204) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = {} };
+}
+
+pub fn getMemoryHotplug(allocator: std.mem.Allocator, transport: *Transport, backend: Backend) !results.Result(models.MemoryHotplugStatus) {
+    var response = try transport.get("/hotplug/memory");
+    defer response.deinit();
+    if (response.status != 200) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = try backend.decodeMemoryHotplugStatus(allocator, response.body) };
+}
+
 pub fn putLogger(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.LoggerRequest) !results.Result(void) {
     const body = try backend.encodeLogger(allocator, request);
     defer allocator.free(body);

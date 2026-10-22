@@ -6,11 +6,17 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 Connection, live instance-information reads, machine configuration reads/writes, boot-source configuration, drive and network-interface configuration, logger and metrics configuration, metrics flushing, and instance start/pause/resume are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getInstanceInfo()`, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `putGuestNetworkInterface()`, `putLogger()`, `putMetrics()`, `flushMetrics()`, `startInstance()`, `pauseInstance()`, `resumeInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
 
-`sendCtrlAltDel()`, `createSnapshot()`, and `loadSnapshot()` are also implemented. Other device configuration, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
+`sendCtrlAltDel()`, `createSnapshot()`, `loadSnapshot()`, and `putBalloon()` are also implemented. Other device configuration, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
 `getVmConfiguration()` exports the full VM resource configuration via `GET /vm/config`.
 `patchMachineConfiguration()` partially updates pre-boot machine settings via `PATCH /machine-config`.
 `putCpuConfiguration()` configures custom pre-boot CPU features via `PUT /cpu-config`.
+`getBalloon()` reads live balloon device configuration via `GET /balloon`.
+`patchBalloon()` changes an existing balloon's target size via `PATCH /balloon`.
+`getBalloonStatistics()` reads the latest balloon statistics via `GET /balloon/statistics`.
+`patchBalloonStatistics()` changes the polling interval via `PATCH /balloon/statistics`.
+`startBalloonHinting()`, `stopBalloonHinting()`, and `getBalloonHintingStatus()` bind the free-page hinting endpoints.
+`putMemoryHotplug()`, `patchMemoryHotplug()`, and `getMemoryHotplug()` bind `PUT/PATCH/GET /hotplug/memory`.
 
 The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, guest readiness checks, and process cleanup remain application responsibilities.
 
@@ -472,6 +478,380 @@ response-size limits, and no-retry behavior apply; a timeout does not prove
 the update failed.
 
 See the pinned [network update semantics](https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/api_requests/patch-network-interface.md).
+
+### Configuring a balloon device
+
+`putBalloon(models.BalloonConfiguration)` sends `PUT /balloon` to create or
+replace the balloon device before VM startup:
+
+```zig
+var balloon = try client.putBalloon(.{
+    .amount_mib = 64,
+    .deflate_on_oom = true,
+    .stats_polling_interval_s = 5,
+});
+defer balloon.deinit();
+switch (balloon) {
+    .success => {},
+    .fault => |fault| {
+        std.log.err("Balloon HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.ConfigurationRejected;
+    },
+}
+```
+
+`amount_mib` (target size in MiB) and `deflate_on_oom` are required.
+`stats_polling_interval_s`, `free_page_hinting`, and `free_page_reporting` are
+optional. Null fields are omitted; explicit zero and false are sent unchanged.
+An omitted statistics interval defaults to zero (statistics disabled).
+This is replacement configuration, not a partial size update. Firecracker
+validates values, device compatibility, and lifecycle; PUT fails after startup.
+
+HTTP 204 returns `Result(void).success`; other statuses return owned raw faults.
+Transport/allocation failures remain Zig errors. Existing request deadlines,
+response-size limits, and no-retry behavior apply. A timeout does not prove the
+configuration failed. This method does not start hinting or read statistics.
+
+Verification covers omitted versus explicit zero/false fields, HTTP faults
+surviving client destruction, unexpected statuses, timeout, disconnect,
+oversized faults, and no retries. A disposable Firecracker v1.17.0 instance
+accepted full, explicit-zero, and minimal configurations through the client;
+direct `GET /balloon` readback confirmed all five fields after each replacement.
+
+### Reading balloon configuration
+
+```zig
+var balloon = try client.getBalloon();
+defer balloon.deinit();
+switch (balloon) {
+    .success => |config| {
+        std.log.info("Balloon target: {d} MiB; deflate on OOM: {}", .{
+            config.amount_mib, config.deflate_on_oom,
+        });
+    },
+    .fault => |fault| {
+        std.log.err("Balloon HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.ConfigurationReadRejected;
+    },
+}
+```
+
+Returns `Result(models.BalloonConfiguration)` from a live `GET /balloon`, not
+cached configuration or balloon statistics. Only HTTP 200 is decoded.
+Other statuses, including an unconfigured device's rejection, preserve the raw
+body and status in an owned fault. Transport, allocation, and JSON decoding
+failures remain Zig errors.
+
+The success value contains only numbers and booleans and may be copied or
+retained after client/result destruction. Missing or null optional fields remain
+null; explicit zero and false remain distinct. Unknown response fields are
+ignored. Always call `deinit()` on the enclosing result to release possible
+fault storage; `Result` also supports value structs without a destructor.
+
+Protocol coverage includes optional-field absence/null/zero/false, required
+fields, malformed responses, HTTP faults, unexpected statuses, timeout,
+disconnect, and response-size limits. Live Firecracker v1.17.0 verification
+used `getBalloon()` after full, zero, and minimal replacements and checked all
+five fields after destroying the client.
+
+### Changing balloon size
+
+```zig
+var resized = try client.patchBalloon(.{ .amount_mib = 32 });
+defer resized.deinit();
+switch (resized) {
+    .success => {},
+    .fault => |fault| {
+        std.log.err("Balloon resize HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.BalloonResizeRejected;
+    },
+}
+```
+
+`models.BalloonUpdate` requires only `amount_mib`, the new target size in MiB.
+Zero requests full deflation. The request does not alter deflate-on-OOM,
+statistics polling, hinting, or reporting settings, and cannot create a device.
+Configure the balloon with `putBalloon()` before boot.
+
+**Firecracker v1.17.0 rejects PATCH before VM startup**, despite the pinned
+OpenAPI description claiming pre-start support. Use `putBalloon()` to change
+pre-boot configuration; use `patchBalloon()` after startup. The client leaves
+value, device, and lifecycle validation to Firecracker and preserves rejections.
+
+Only HTTP 204 returns success; other statuses return owned raw HTTP faults.
+Success acknowledges the target change, not completed guest memory reclamation.
+Transport/allocation failures remain Zig errors. Existing deadlines and response
+limits apply; no automatic retries. A timeout does not prove the resize failed.
+
+Protocol verification covers nonzero and zero targets, negative values reaching
+server validation, owned faults after client destruction, unexpected statuses,
+timeouts, disconnects, oversized faults, and no retries. A disposable live
+v1.17.0 process received `PATCH /balloon` with `{"amount_mib":32}` and returned
+the pre-start HTTP 400 restriction. Post-start resizing and guest reclamation
+were not exercised in this verification.
+
+### Reading balloon statistics
+
+```zig
+var statistics = try client.getBalloonStatistics();
+defer statistics.deinit();
+switch (statistics) {
+    .success => |stats| {
+        std.log.info("Balloon target: {d} MiB; actual: {d} MiB", .{
+            stats.target_mib, stats.actual_mib,
+        });
+        if (stats.free_memory) |bytes| {
+            std.log.info("Guest free memory: {d} bytes", .{bytes});
+        }
+    },
+    .fault => |fault| {
+        std.log.err("Balloon statistics HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.StatisticsReadRejected;
+    },
+}
+```
+
+Returns `Result(models.BalloonStatistics)`. Required fields are `target_pages`,
+`actual_pages`, `target_mib`, and `actual_mib`. Optional guest counters cover
+swap, page faults, free/total/available memory, disk caches, hugetlb allocations
+and failures, OOM kills, allocation stalls, and asynchronous/direct scans and
+reclaims. Swap, free/total/available memory, and disk-cache counters use bytes.
+Values use `i64`, matching the pinned wire models, without conversion through
+floating point.
+
+Missing or null optional counters remain null, distinct from zero; unknown
+response fields are ignored. The scalar success value can be copied and retained
+after destroying the client or result. Always deinitialize the enclosing result
+to release possible fault storage.
+
+Enable statistics before boot with a nonzero `stats_polling_interval_s` in
+`putBalloon()`, then start the VM. This GET does not enable polling or wait for
+a fresh guest sample. Firecracker v1.17.0 rejects this operation before startup,
+even when polling is configured. The schema also documents HTTP 400 when
+statistics were not enabled.
+
+Only HTTP 200 is decoded; other statuses preserve owned raw faults.
+Transport, allocation, and JSON decoding failures remain Zig errors. Existing
+deadlines, response-size limits, and no-retry behavior apply.
+
+Protocol verification covers all 20 fields, distinct target/actual values,
+integers above floating-point exact precision, absent/null/zero counters,
+missing required fields, malformed responses, owned faults after client
+destruction, unexpected statuses, timeout, disconnect, and oversized responses.
+A live v1.17.0 process received the client's statistics GET and returned the
+pre-start HTTP 400 restriction. Post-start guest statistics were not exercised.
+
+### Changing the statistics polling interval
+
+```zig
+var updated = try client.patchBalloonStatistics(.{
+    .stats_polling_interval_s = 7,
+});
+defer updated.deinit();
+switch (updated) {
+    .success => {},
+    .fault => |fault| {
+        std.log.err("Balloon interval HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.StatisticsIntervalRejected;
+    },
+}
+```
+
+`models.BalloonStatisticsUpdate` requires `stats_polling_interval_s`, in seconds.
+Only that field is sent; the balloon size and other settings are unchanged.
+The pinned contract schedules the first statistics update immediately.
+HTTP success does not mean a fresh guest sample is already available.
+
+Configure statistics with a nonzero interval in `putBalloon()` before boot,
+then use this PATCH to change the interval after startup. Statistics cannot be
+turned on or off after boot; zero is not a supported way to disable active
+polling. The client sends values unchanged, including zero and negative values,
+and leaves value, device, and lifecycle validation to Firecracker.
+
+Live Firecracker v1.17.0 rejects this PATCH before startup, contrary to the
+endpoint's pinned OpenAPI description. For pre-boot changes, replace the balloon
+configuration with `putBalloon()`.
+
+Only HTTP 204 returns `Result(void).success`; other statuses preserve owned raw
+HTTP faults. Transport/allocation failures remain Zig errors. Existing deadlines,
+response-size limits, and no-retry behavior apply; a timeout does not establish
+whether the interval changed.
+
+Protocol coverage verifies the exact PATCH path and payload, positive/zero/
+negative values, faults surviving client destruction, unexpected statuses,
+timeouts, disconnects, oversized faults, and no retries. Live v1.17.0 received
+`{"stats_polling_interval_s":7}` at `/balloon/statistics` and returned the pre-start
+HTTP 400 restriction. Post-start polling cadence was not exercised.
+
+### Free-page hinting
+
+Enable `.free_page_hinting = true` in `putBalloon()` before boot. Firecracker
+v1.17.0 labels this feature development preview. The guest must support it;
+enabling free-page reporting alone does not enable hinting.
+
+| Client method | HTTP endpoint | Result |
+| --- | --- | --- |
+| `startBalloonHinting(request)` | `PATCH /balloon/hinting/start` | `Result(void)` |
+| `stopBalloonHinting()` | `PATCH /balloon/hinting/stop` | `Result(void)` |
+| `getBalloonHintingStatus()` | `GET /balloon/hinting/status` | `Result(models.BalloonHintingStatus)` |
+
+```zig
+var started = try client.startBalloonHinting(.{ .acknowledge_on_stop = true });
+defer started.deinit();
+switch (started) {
+    .success => {},
+    .fault => |fault| {
+        std.log.err("Hinting start HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.HintingStartRejected;
+    },
+}
+
+var status = try client.getBalloonHintingStatus();
+defer status.deinit();
+switch (status) {
+    .success => |value| {
+        std.log.info("Hinting host command: {d}; guest command: {?d}", .{
+            value.host_cmd, value.guest_cmd,
+        });
+    },
+    .fault => |fault| {
+        std.log.err("Hinting status HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.HintingStatusRejected;
+    },
+}
+
+// When the application decides to stop the run:
+var stopped = try client.stopBalloonHinting();
+defer stopped.deinit();
+switch (stopped) {
+    .success => {},
+    .fault => |fault| {
+        std.log.err("Hinting stop HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.HintingStopRejected;
+    },
+}
+```
+
+`BalloonHintingStartRequest.acknowledge_on_stop` controls whether Firecracker
+automatically acknowledges the guest's done command. Passing `.{}`
+omits that field and sends `{}`, leaving the server default intact. Explicit
+true and false are preserved. Stop sends an empty body, as supported by the
+[v1.17 request parser](https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/src/firecracker/src/api_server/request/balloon.rs).
+
+Status requires `host_cmd`; optional `guest_cmd` preserves absence/null separately
+from zero. Both are numeric commands, not a derived running/completed enum.
+Unknown response fields are ignored. The scalar status may outlive the client
+and result; always deinitialize the result to release possible fault storage.
+
+Start/stop accept only HTTP 204 as success; status decodes only HTTP 200.
+Other statuses preserve owned raw faults. Transport/allocation/decoding failures
+remain Zig errors. Existing deadlines and response-size limits apply. No method
+retries or polls for guest completion. A timeout can follow an accepted command.
+
+Live Firecracker v1.17.0 rejected all three endpoints before VM startup even
+with hinting configured. Use them after startup; Firecracker validates device
+availability and lifecycle. Protocol coverage checks start's omitted/true/false
+option, stop's empty body, status absence/null/zero and distinct commands,
+malformed responses, owned faults, unexpected statuses, timeout, disconnect,
+oversized responses, and no retries. Live request delivery and pre-start
+rejections were observed; post-start guest hinting was not exercised.
+
+### Hotpluggable memory
+
+Hotpluggable memory uses virtio-mem and is a separate pool from the VM's boot
+memory. Configure its capacity before boot, then request target sizes after
+startup. The guest must support `CONFIG_VIRTIO_MEM`; host acceptance does not
+guarantee guest progress or successful unplugging.
+
+| Client method | Request / result |
+| --- | --- |
+| `putMemoryHotplug(request)` | `MemoryHotplugConfiguration` → `Result(void)` |
+| `patchMemoryHotplug(request)` | `MemoryHotplugUpdate` → `Result(void)` |
+| `getMemoryHotplug()` | `Result(MemoryHotplugStatus)` |
+
+Configure before starting the VM:
+
+```zig
+var configured = try client.putMemoryHotplug(.{
+    .total_size_mib = 1024,
+    .slot_size_mib = 128,
+    .block_size_mib = 2,
+});
+defer configured.deinit();
+switch (configured) {
+    .success => {},
+    .fault => |fault| {
+        std.log.err("Memory hotplug configuration HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.MemoryHotplugConfigurationRejected;
+    },
+}
+```
+
+After the application has started the VM, request memory:
+
+```zig
+var resized = try client.patchMemoryHotplug(.{ .requested_size_mib = 256 });
+defer resized.deinit();
+switch (resized) {
+    .success => {},
+    .fault => |fault| {
+        std.log.err("Memory hotplug resize HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.MemoryHotplugResizeRejected;
+    },
+}
+
+var status = try client.getMemoryHotplug();
+defer status.deinit();
+switch (status) {
+    .success => |value| {
+        std.log.info("Memory hotplug requested: {?d} MiB; plugged: {?d} MiB", .{
+            value.requested_size_mib, value.plugged_size_mib,
+        });
+    },
+    .fault => |fault| {
+        std.log.err("Memory hotplug status HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.MemoryHotplugStatusRejected;
+    },
+}
+```
+
+All sizes are MiB. Firecracker requires `total_size_mib` for configuration,
+with default slot/block sizes of 128/2 MiB. Capacity must be a multiple of the
+slot size. Blocks must be powers of two and at least 2 MiB; slots must be at
+least 128 MiB and multiples of the block size. The resize target must be a
+multiple of the block size and not exceed capacity. Zero requests unplugging
+all hotpluggable memory, not boot memory.
+
+Public request fields remain optional to match the pinned schema and existing
+full-VM configuration model. Null fields are omitted, not replaced with client
+defaults; explicit zero and negative values reach server validation. Supply
+`total_size_mib` for PUT and `requested_size_mib` for PATCH. PUT configures
+capacity/granularity; PATCH changes only the target.
+
+GET exposes `total_size_mib`, `slot_size_mib`, `block_size_mib`,
+`plugged_size_mib`, and `requested_size_mib`. Missing/null fields remain null;
+explicit zero is preserved and unknown fields are ignored. Scalar status data
+may outlive the client/result. Requested and plugged sizes can differ while the
+guest works; these methods neither poll nor wait for convergence.
+
+PUT/PATCH accept only HTTP 204; GET decodes only HTTP 200. Other statuses return
+owned raw faults. Transport/allocation/decoding failures remain Zig errors.
+Always deinitialize results. Existing deadlines, response-size limits, and
+no-retry behavior apply; a timed-out resize may already have changed the target.
+
+Live Firecracker v1.17.0 accepted the 1024/128/2 MiB configuration through the
+client, and `/vm/config` confirmed it. Both GET and PATCH on `/hotplug/memory`
+were rejected before startup; use `getVmConfiguration().memory_hotplug` to
+inspect pre-boot configuration instead. This differs from the upstream guide's
+claim that status can be queried at any time. Post-start resizing and guest
+convergence were not exercised.
+
+Protocol verification covers minimal/full/empty requests, zero and negative
+values, distinct requested/plugged sizes, absent/null/zero status fields,
+malformed JSON/types, owned faults after client destruction, unexpected
+statuses, timeout, disconnect, oversized responses, and no retries.
+See the [v1.17 virtio-mem guide](https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/memory-hotplug.md)
+for guest kernel requirements, memory onlining, and hot-removal constraints.
 
 ### Configuring logs and metrics
 

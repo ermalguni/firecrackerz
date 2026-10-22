@@ -128,6 +128,70 @@ pub const Client = struct {
         return operations.patchGuestNetworkInterface(self.allocator, &self.transport, self.backend, request);
     }
 
+    /// Reads live balloon configuration, not statistics. Scalar values outlive
+    /// the client; absent optional fields remain null.
+    pub fn getBalloon(self: *Client) !results.Result(models.BalloonConfiguration) {
+        return operations.getBalloon(self.allocator, &self.transport, self.backend);
+    }
+
+    /// Reads the latest balloon statistics without enabling polling or waiting
+    /// for a fresh guest sample. Absent guest counters remain null.
+    pub fn getBalloonStatistics(self: *Client) !results.Result(models.BalloonStatistics) {
+        return operations.getBalloonStatistics(self.allocator, &self.transport, self.backend);
+    }
+
+    /// Creates or replaces a balloon device before boot. Null fields are omitted.
+    /// Firecracker validates values and lifecycle. No automatic retries.
+    pub fn putBalloon(self: *Client, request: models.BalloonConfiguration) !results.Result(void) {
+        return operations.putBalloon(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Changes an existing balloon's target size, not its other settings.
+    /// Success acknowledges the target, not guest reclamation. No retries.
+    pub fn patchBalloon(self: *Client, request: models.BalloonUpdate) !results.Result(void) {
+        return operations.patchBalloon(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Changes the polling interval, scheduling the first update immediately.
+    /// Cannot toggle statistics after boot. Does not wait for a sample or retry.
+    pub fn patchBalloonStatistics(self: *Client, request: models.BalloonStatisticsUpdate) !results.Result(void) {
+        return operations.patchBalloonStatistics(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Starts a free-page hinting run, enabled through putBalloon before boot.
+    /// Does not wait for guest completion. No automatic retries.
+    pub fn startBalloonHinting(self: *Client, request: models.BalloonHintingStartRequest) !results.Result(void) {
+        return operations.startBalloonHinting(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Requests that the hinting run stop. No automatic retries or guest polling.
+    pub fn stopBalloonHinting(self: *Client) !results.Result(void) {
+        return operations.stopBalloonHinting(self.allocator, &self.transport);
+    }
+
+    /// Reads the last host/guest hinting commands without caching or polling.
+    pub fn getBalloonHintingStatus(self: *Client) !results.Result(models.BalloonHintingStatus) {
+        return operations.getBalloonHintingStatus(self.allocator, &self.transport, self.backend);
+    }
+
+    /// Configures pre-boot virtio-mem capacity and granularity. Null fields are
+    /// omitted; Firecracker validates values and lifecycle. No retries.
+    pub fn putMemoryHotplug(self: *Client, request: models.MemoryHotplugConfiguration) !results.Result(void) {
+        return operations.putMemoryHotplug(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Changes the virtio-mem target, not its capacity. Does not wait for the
+    /// guest to plug/unplug memory. No automatic retries.
+    pub fn patchMemoryHotplug(self: *Client, request: models.MemoryHotplugUpdate) !results.Result(void) {
+        return operations.patchMemoryHotplug(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Reads live virtio-mem status, including requested and plugged sizes.
+    /// Does not poll for convergence. Absent fields remain null.
+    pub fn getMemoryHotplug(self: *Client) !results.Result(models.MemoryHotplugStatus) {
+        return operations.getMemoryHotplug(self.allocator, &self.transport, self.backend);
+    }
+
     /// Configures Firecracker logging; does not create or read the destination.
     /// Request data is borrowed during the call. No automatic retries.
     pub fn putLogger(self: *Client, request: models.LoggerRequest) !results.Result(void) {

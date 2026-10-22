@@ -89,6 +89,66 @@ pub const Backend = union(enum) {
         };
     }
 
+    pub fn decodeBalloon(self: Backend, allocator: std.mem.Allocator, body: []const u8) !models.BalloonConfiguration {
+        return switch (self) {
+            .v1_17 => v1_17.decodeBalloon(allocator, body),
+        };
+    }
+
+    pub fn decodeBalloonStatistics(self: Backend, allocator: std.mem.Allocator, body: []const u8) !models.BalloonStatistics {
+        return switch (self) {
+            .v1_17 => v1_17.decodeBalloonStatistics(allocator, body),
+        };
+    }
+
+    pub fn encodeBalloon(self: Backend, allocator: std.mem.Allocator, request: models.BalloonConfiguration) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeBalloon(allocator, request),
+        };
+    }
+
+    pub fn encodeBalloonUpdate(self: Backend, allocator: std.mem.Allocator, request: models.BalloonUpdate) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeBalloonUpdate(allocator, request),
+        };
+    }
+
+    pub fn encodeBalloonStatisticsUpdate(self: Backend, allocator: std.mem.Allocator, request: models.BalloonStatisticsUpdate) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeBalloonStatisticsUpdate(allocator, request),
+        };
+    }
+
+    pub fn encodeBalloonHintingStart(self: Backend, allocator: std.mem.Allocator, request: models.BalloonHintingStartRequest) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeBalloonHintingStart(allocator, request),
+        };
+    }
+
+    pub fn decodeBalloonHintingStatus(self: Backend, allocator: std.mem.Allocator, body: []const u8) !models.BalloonHintingStatus {
+        return switch (self) {
+            .v1_17 => v1_17.decodeBalloonHintingStatus(allocator, body),
+        };
+    }
+
+    pub fn encodeMemoryHotplug(self: Backend, allocator: std.mem.Allocator, request: models.MemoryHotplugConfiguration) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeMemoryHotplug(allocator, request),
+        };
+    }
+
+    pub fn encodeMemoryHotplugUpdate(self: Backend, allocator: std.mem.Allocator, request: models.MemoryHotplugUpdate) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeMemoryHotplugUpdate(allocator, request),
+        };
+    }
+
+    pub fn decodeMemoryHotplugStatus(self: Backend, allocator: std.mem.Allocator, body: []const u8) !models.MemoryHotplugStatus {
+        return switch (self) {
+            .v1_17 => v1_17.decodeMemoryHotplugStatus(allocator, body),
+        };
+    }
+
     pub fn encodeLogger(self: Backend, allocator: std.mem.Allocator, request: models.LoggerRequest) ![]u8 {
         return switch (self) {
             .v1_17 => v1_17.encodeLogger(allocator, request),
