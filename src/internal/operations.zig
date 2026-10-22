@@ -95,6 +95,12 @@ pub fn resumeInstance(allocator: std.mem.Allocator, transport: *Transport) !resu
     return patchVm(allocator, transport, "{\"state\":\"Resumed\"}");
 }
 
+pub fn createSnapshot(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.SnapshotCreateRequest) !results.Result(void) {
+    const body = try backend.encodeSnapshotCreate(allocator, request);
+    defer allocator.free(body);
+    return putEmpty(allocator, transport, "/snapshot/create", body);
+}
+
 fn patchVm(allocator: std.mem.Allocator, transport: *Transport, body: []const u8) !results.Result(void) {
     var response = try transport.patch("/vm", body);
     defer response.deinit();

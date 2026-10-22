@@ -70,4 +70,10 @@ pub const Backend = union(enum) {
             .v1_17 => v1_17.encodeMetrics(allocator, request),
         };
     }
+
+    pub fn encodeSnapshotCreate(self: Backend, allocator: std.mem.Allocator, request: models.SnapshotCreateRequest) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeSnapshotCreate(allocator, request),
+        };
+    }
 };

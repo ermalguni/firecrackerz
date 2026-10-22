@@ -119,6 +119,16 @@ pub const MetricsRequest = struct {
     properties: ?std.json.ArrayHashMap([]const u8) = null,
 };
 
+/// Post-boot snapshot creation. The VM must be paused; Diff requires dirty-page
+/// tracking. Strings are borrowed and paths belong to Firecracker's filesystem.
+/// Null options are omitted: Firecracker defaults to Full and syncing files.
+pub const SnapshotCreateRequest = struct {
+    mem_file_path: []const u8,
+    snapshot_path: []const u8,
+    snapshot_type: ?[]const u8 = null,
+    sync_snapshot_files: ?bool = null,
+};
+
 pub const RateLimiter = struct {
     bandwidth: ?TokenBucket = null,
     ops: ?TokenBucket = null,

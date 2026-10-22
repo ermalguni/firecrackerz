@@ -142,6 +142,13 @@ pub const Client = struct {
         return operations.resumeInstance(self.allocator, &self.transport);
     }
 
+    /// Creates a Full or Diff snapshot of a paused VM. Diff requires dirty-page
+    /// tracking. Does not pause/resume, open paths locally, or retry.
+    /// A timeout/disconnect may follow completed or partially written files.
+    pub fn createSnapshot(self: *Client, request: models.SnapshotCreateRequest) !results.Result(void) {
+        return operations.createSnapshot(self.allocator, &self.transport, self.backend, request);
+    }
+
     pub fn deinit(self: *Client) void {
         self.transport.deinit();
         self.discovered.deinit(self.allocator);

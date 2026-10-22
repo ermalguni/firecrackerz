@@ -120,6 +120,16 @@ pub fn encodeMetrics(allocator: std.mem.Allocator, request: models.MetricsReques
     return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
 }
 
+pub fn encodeSnapshotCreate(allocator: std.mem.Allocator, request: models.SnapshotCreateRequest) ![]u8 {
+    const value: wire.SnapshotCreateParams = .{
+        .mem_file_path = request.mem_file_path,
+        .snapshot_path = request.snapshot_path,
+        .snapshot_type = request.snapshot_type,
+        .sync_snapshot_files = request.sync_snapshot_files,
+    };
+    return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+}
+
 fn encodeRateLimiter(limiter: ?models.RateLimiter) ?wire.RateLimiter {
     const value = limiter orelse return null;
     return .{

@@ -348,6 +348,52 @@ Both methods send `PATCH /vm`: pause uses `{"state":"Paused"}`, resume uses `{"s
 
 Requests use the configured timeout and response-size limit and are never automatically retried. After a timeout or disconnect, the state change may already have completed. Inspect `getInstanceInfo()` before deciding what to do; it reports `Paused` or `Running`, but cannot prevent concurrent lifecycle changes.
 
+### Creating full or differential snapshots
+
+`createSnapshot(models.SnapshotCreateRequest)` sends `PUT /snapshot/create` and
+returns `Result(void)`. Pause the booted VM with `pauseInstance()` and check its
+result before creating a snapshot. The client does not pause or resume implicitly.
+
+```zig
+// The VM is already paused.
+var snapshot = try client.createSnapshot(.{
+    .mem_file_path = "/snapshots/guest.mem",
+    .snapshot_path = "/snapshots/guest.state",
+    .snapshot_type = "Full", // Use "Diff" for a differential snapshot.
+});
+defer snapshot.deinit();
+switch (snapshot) {
+    .success => {},
+    .fault => |fault| {
+        std.log.err("Snapshot rejected: HTTP {d}: {s}", .{ fault.status, fault.body });
+        return;
+    },
+}
+```
+
+Both paths are required, borrowed during the call, and resolved in Firecracker's
+filesystem namespace. The client does not open them or create directories.
+Omitting `snapshot_type` requests the server's default full snapshot. For `"Diff"`,
+enable `track_dirty_pages = true` in machine configuration before boot. Firecracker
+validates snapshot type, lifecycle, paths, and dirty-page tracking; invalid requests
+are returned as HTTP faults rather than checked against cached client state.
+
+`sync_snapshot_files` is optional and defaults to true on the server. Explicit
+false avoids waiting for snapshot state/memory file writeback, sacrificing
+durability across host crashes; block-device backing files are still synced.
+Only HTTP 204 succeeds; other statuses retain their owned raw fault body.
+
+Snapshot creation uses `request_timeout_ms` from connection options; choose a
+timeout appropriate for guest memory size and storage speed. There are no retries:
+a timeout or disconnect may leave completed or partially written files. Live VM
+state alone cannot establish snapshot completion. Resume explicitly when appropriate.
+Snapshot restoration and management of differential memory files remain outside
+this endpoint binding.
+
+Local Unix-socket protocol scenarios exercise full and differential requests,
+omitted options, escaped paths, explicit sync true/false, HTTP faults, unexpected
+statuses, timeouts, disconnects, and absence of automatic retries.
+
 ### Sending Ctrl+Alt+Delete
 
 ```zig
