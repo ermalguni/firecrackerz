@@ -4,7 +4,7 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 ## Status and scope
 
-Connection, live instance-information reads, machine configuration reads/writes, boot-source configuration, drive and network-interface configuration, logger and metrics configuration, metrics flushing, and instance start are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getInstanceInfo()`, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `putGuestNetworkInterface()`, `putLogger()`, `putMetrics()`, `flushMetrics()`, `startInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
+Connection, live instance-information reads, machine configuration reads/writes, boot-source configuration, drive and network-interface configuration, logger and metrics configuration, metrics flushing, and instance start/pause/resume are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getInstanceInfo()`, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `putGuestNetworkInterface()`, `putLogger()`, `putMetrics()`, `flushMetrics()`, `startInstance()`, `pauseInstance()`, `resumeInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
 
 Other device configuration, other action methods, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
@@ -317,6 +317,36 @@ This sends `PUT /actions` with `{"action_type":"InstanceStart"}` and returns `Re
 **There are no automatic retries.** A timeout or disconnect after sending the action does not establish whether the VM started. Call `client.getInstanceInfo()` to inspect live state before deciding what to do; `client.info()` is cached connection metadata, not VM state. A read is a snapshot, not a guarantee against concurrent lifecycle changes. If the read fails or the outcome remains ambiguous, do not assume startup failed and blindly retry. Existing request timeouts and response limits apply.
 
 Success means Firecracker accepted startup, not that the guest reached userspace or that an application is ready. A disk-backed guest needs a bootable root filesystem; an initramfs-only guest need not have a root drive. Destroying the client closes client resources; it does not stop the VM or terminate Firecracker.
+
+### Pausing and resuming
+
+Use `pauseInstance()` to suspend a booted microVM and `resumeInstance()` to resume it. Resume does not boot an unstarted VM and pause does not shut down the guest or terminate Firecracker.
+
+```zig
+var paused = try client.pauseInstance();
+defer paused.deinit();
+switch (paused) {
+    .success => {},
+    .fault => |fault| {
+        std.log.err("Pause rejected: HTTP {d}: {s}", .{ fault.status, fault.body });
+        return;
+    },
+}
+
+// Perform work requiring the VM to remain paused, then resume.
+var resumed = try client.resumeInstance();
+defer resumed.deinit();
+switch (resumed) {
+    .success => {},
+    .fault => |fault| std.log.err("Resume rejected: HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+Both methods send `PATCH /vm`: pause uses `{"state":"Paused"}`, resume uses `{"state":"Resumed"}` (not `"Running"`). They return `Result(void)`: only HTTP 204 succeeds; every other status preserves an owned raw fault body. Transport/allocation failures remain Zig errors. Firecracker validates lifecycle state, including requests before boot; the client neither caches state nor suppresses repeated requests.
+
+Requests use the configured timeout and response-size limit and are never automatically retried. After a timeout or disconnect, the state change may already have completed. Inspect `getInstanceInfo()` before deciding what to do; it reports `Paused` or `Running`, but cannot prevent concurrent lifecycle changes.
 
 
 ### Connection behavior

@@ -83,6 +83,25 @@ pub fn startInstance(allocator: std.mem.Allocator, transport: *Transport) !resul
     return putEmpty(allocator, transport, "/actions", "{\"action_type\":\"InstanceStart\"}");
 }
 
+pub fn pauseInstance(allocator: std.mem.Allocator, transport: *Transport) !results.Result(void) {
+    return patchVm(allocator, transport, "{\"state\":\"Paused\"}");
+}
+
+pub fn resumeInstance(allocator: std.mem.Allocator, transport: *Transport) !results.Result(void) {
+    return patchVm(allocator, transport, "{\"state\":\"Resumed\"}");
+}
+
+fn patchVm(allocator: std.mem.Allocator, transport: *Transport, body: []const u8) !results.Result(void) {
+    var response = try transport.patch("/vm", body);
+    defer response.deinit();
+    if (response.status != 204) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = {} };
+}
+
 fn putEmpty(allocator: std.mem.Allocator, transport: *Transport, path: []const u8, body: []const u8) !results.Result(void) {
     var response = try transport.put(path, body);
     defer response.deinit();

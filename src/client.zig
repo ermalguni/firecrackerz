@@ -123,6 +123,18 @@ pub const Client = struct {
         return operations.startInstance(self.allocator, &self.transport);
     }
 
+    /// Pauses the microVM via PATCH /vm. Firecracker validates lifecycle state.
+    /// Never retried; on timeout/disconnect, inspect live state before acting.
+    pub fn pauseInstance(self: *Client) !results.Result(void) {
+        return operations.pauseInstance(self.allocator, &self.transport);
+    }
+
+    /// Resumes a paused microVM; does not start an unbooted instance.
+    /// Never retried; no local lifecycle state is cached.
+    pub fn resumeInstance(self: *Client) !results.Result(void) {
+        return operations.resumeInstance(self.allocator, &self.transport);
+    }
+
     pub fn deinit(self: *Client) void {
         self.transport.deinit();
         self.discovered.deinit(self.allocator);

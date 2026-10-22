@@ -54,6 +54,14 @@ pub const Transport = struct {
     }
 
     pub fn put(self: *Transport, path: []const u8, body: []const u8) !Response {
+        return self.sendJson(path, .put, body);
+    }
+
+    pub fn patch(self: *Transport, path: []const u8, body: []const u8) !Response {
+        return self.sendJson(path, .patch, body);
+    }
+
+    fn sendJson(self: *Transport, path: []const u8, method: dusty.Method, body: []const u8) !Response {
         var keys: [1][]const u8 = undefined;
         var values: [1][]const u8 = undefined;
         var hashes: [1]u8 = undefined;
@@ -63,7 +71,7 @@ pub const Transport = struct {
         const url = std.mem.print(&buffer, "http://localhost{s}", .{path}) catch
             try std.fmt.allocPrint(self.allocator, "http://localhost{s}", .{path});
         defer if (url.ptr != &buffer) self.allocator.free(url);
-        return self.request(url, .put, body, &headers);
+        return self.request(url, method, body, &headers);
     }
 
     fn request(self: *Transport, url: []const u8, method: dusty.Method, request_body: ?[]const u8, headers: ?*const dusty.Headers) !Response {
