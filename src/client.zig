@@ -109,6 +109,12 @@ pub const Client = struct {
         return operations.putGuestDrive(self.allocator, &self.transport, self.backend, request);
     }
 
+    /// Updates an existing drive's backing path or rate limiter.
+    /// The ID selects path and body. Borrowed strings; no local file I/O or retries.
+    pub fn patchGuestDrive(self: *Client, request: models.DriveUpdate) !results.Result(void) {
+        return operations.patchGuestDrive(self.allocator, &self.transport, self.backend, request);
+    }
+
     /// Creates or replaces a pre-boot network interface using an existing TAP.
     /// The ID selects both path and body. Does not configure host networking.
     /// Request strings are borrowed; no automatic retries.

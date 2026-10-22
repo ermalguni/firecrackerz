@@ -71,6 +71,12 @@ pub const Backend = union(enum) {
         };
     }
 
+    pub fn encodeDriveUpdate(self: Backend, allocator: std.mem.Allocator, request: models.DriveUpdate) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeDriveUpdate(allocator, request),
+        };
+    }
+
     pub fn encodeNetworkInterface(self: Backend, allocator: std.mem.Allocator, request: models.NetworkInterfaceRequest) ![]u8 {
         return switch (self) {
             .v1_17 => v1_17.encodeNetworkInterface(allocator, request),

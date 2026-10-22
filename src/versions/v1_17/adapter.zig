@@ -139,6 +139,15 @@ pub fn encodeDrive(allocator: std.mem.Allocator, request: models.DriveRequest) !
     return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
 }
 
+pub fn encodeDriveUpdate(allocator: std.mem.Allocator, request: models.DriveUpdate) ![]u8 {
+    const value: wire.PartialDrive = .{
+        .drive_id = request.drive_id,
+        .path_on_host = request.path_on_host,
+        .rate_limiter = encodeRateLimiter(request.rate_limiter),
+    };
+    return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+}
+
 pub fn encodeNetworkInterface(allocator: std.mem.Allocator, request: models.NetworkInterfaceRequest) ![]u8 {
     const value: wire.NetworkInterface = .{
         .iface_id = request.iface_id,

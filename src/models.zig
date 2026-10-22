@@ -200,6 +200,15 @@ pub const DriveRequest = struct {
     socket: ?[]const u8 = null,
 };
 
+/// Updates an existing drive, including after boot; does not attach a device.
+/// Strings are borrowed. Null fields are omitted, not reset.
+/// Coordinate backing-file changes with the guest to prevent concurrent I/O.
+pub const DriveUpdate = struct {
+    drive_id: []const u8,
+    path_on_host: ?[]const u8 = null,
+    rate_limiter: ?RateLimiter = null,
+};
+
 /// Pre-boot network interface creation/replacement. Strings are borrowed for
 /// the call. The TAP device must already exist in Firecracker's network namespace.
 /// Firecracker validates MAC, MTU, rate limits, and lifecycle restrictions.

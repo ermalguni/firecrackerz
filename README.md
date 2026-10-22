@@ -345,6 +345,47 @@ switch (drive) {
 
 Strings are borrowed for the call. Image and socket paths belong to the **Firecracker process's filesystem namespace**; the client does not open, upload, or rewrite them. The return type is `Result(void)`: HTTP 204 succeeds, other statuses preserve owned raw faults, and transport/allocation errors remain Zig errors. Existing timeouts, response limits, and the no-retry policy apply. Configuration does not format a disk, check for a guest filesystem, or start the guest.
 
+### Updating an existing drive
+
+`patchGuestDrive(models.DriveUpdate)` sends `PATCH /drives/{drive_id}` to change
+an existing drive's backing file, rate limiter, or both, including after boot.
+It does not attach a new device.
+
+```zig
+var update = try client.patchGuestDrive(.{
+    .drive_id = "data",
+    .path_on_host = "/images/replacement.ext4",
+    .rate_limiter = .{
+        .bandwidth = .{ .size = 1048576, .refill_time = 100 },
+    },
+});
+defer update.deinit();
+switch (update) {
+    .success => {},
+    .fault => |fault| std.log.err("Drive update rejected: HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+Only `drive_id` is required. Omitted (`null`) fields are not serialized, including
+nested limiter fields; explicit zero values and empty strings/objects are
+preserved for Firecracker to interpret. A request containing only `drive_id` is
+also supported, including vhost-user configuration-change notifications.
+One ID supplies both the JSON body and the escaped URL segment.
+
+Strings are borrowed during the call. Paths are in Firecracker's filesystem
+namespace; this method does not open, resize, or modify host files. HTTP 204
+returns success; all other statuses return owned raw faults. Transport errors,
+timeouts, response-size limits, and the no-retry policy match drive creation.
+A timeout does not establish whether the update was applied.
+
+**Coordinate backing-file changes with the guest:** the drive must not be
+mounted or subject to guest reads/writes during the update sequence. Pausing
+alone does not eliminate queued guest I/O. Host-file changes and PATCH are not
+atomic; when changing a file's size, PATCH is needed to notify Firecracker.
+See the upstream [block-update safety requirements](https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/api_requests/patch-block.md).
+
 ### Configuring a network interface
 
 On a connected, **pre-boot** instance, using a TAP device already prepared for Firecracker:

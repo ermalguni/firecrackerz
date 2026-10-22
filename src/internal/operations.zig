@@ -80,6 +80,24 @@ pub fn putGuestDrive(allocator: std.mem.Allocator, transport: *Transport, backen
     return putEmpty(allocator, transport, path, body);
 }
 
+pub fn patchGuestDrive(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.DriveUpdate) !results.Result(void) {
+    const body = try backend.encodeDriveUpdate(allocator, request);
+    defer allocator.free(body);
+    var buffer: [512]u8 = undefined;
+    const args = .{std.fmt.alt(@as(std.Uri.Component, .{ .raw = request.drive_id }), .formatEscaped)};
+    const path = std.mem.print(&buffer, "/drives/{f}", args) catch
+        try std.fmt.allocPrint(allocator, "/drives/{f}", args);
+    defer if (path.ptr != &buffer) allocator.free(path);
+    var response = try transport.patch(path, body);
+    defer response.deinit();
+    if (response.status != 204) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = {} };
+}
+
 pub fn putGuestNetworkInterface(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.NetworkInterfaceRequest) !results.Result(void) {
     const body = try backend.encodeNetworkInterface(allocator, request);
     defer allocator.free(body);
