@@ -5,6 +5,8 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 4) return error.InvalidArguments;
     const mode = args[3];
+    if (std.mem.startsWith(u8, mode, "boot-"))
+        return runBoot(init, args[1], args[2], mode);
     var vm = fc.runtime.Vm.init(init.gpa, init.io);
     defer vm.deinit();
     defer assertNoChildren();
@@ -95,6 +97,125 @@ pub fn main(init: std.process.Init) !void {
     }
     try vm.shutdown(1000);
     std.debug.print("PASS {s}\n", .{mode});
+}
+
+fn runBoot(init: std.process.Init, executable: []const u8, parent: []const u8, mode: []const u8) !void {
+    var vm = fc.runtime.Vm.init(init.gpa, init.io);
+    defer vm.deinit();
+    defer assertNoChildren();
+    const allocator = init.arena.allocator();
+    const kernel = try std.fmt.allocPrint(allocator, "{s}/kernel image", .{parent});
+    const initrd = try std.fmt.allocPrint(allocator, "{s}/initrd", .{parent});
+    const rootfs = try std.fmt.allocPrint(allocator, "{s}/root disk", .{parent});
+    const data = try std.fmt.allocPrint(allocator, "{s}/data disk", .{parent});
+    const drives = [_]fc.engine.models.DriveRequest{
+        .{ .drive_id = "rootfs", .is_root_device = true, .is_read_only = true, .path_on_host = rootfs },
+        .{ .drive_id = "data", .is_root_device = false, .is_read_only = false, .path_on_host = data },
+    };
+    const spec: fc.runtime.BootSpec = .{
+        .machine = .{ .vcpu_count = 2, .mem_size_mib = 256, .smt = false, .track_dirty_pages = true },
+        .boot_source = .{ .kernel_image_path = kernel, .initrd_path = initrd, .boot_args = "console=ttyS0 reboot=k panic=1 pci=off" },
+        .drives = &drives,
+    };
+    const cancel = std.mem.eql(u8, mode, "boot-cancel");
+    const options: fc.runtime.StartOptions = .{
+        .executable = executable,
+        .workspace_parent = parent,
+        .startup_timeout_ms = if (cancel) 10000 else 700,
+        .request_timeout_ms = 5000,
+    };
+    const result = if (cancel) blk: {
+        var future = try init.io.concurrent(fc.runtime.Vm.boot, .{ &vm, options, spec });
+        errdefer {
+            if (future.cancel(init.io)) |value| {
+                var response = value;
+                response.deinit();
+            } else |_| {}
+        }
+        const marker = try std.fmt.allocPrint(allocator, "{s}/config-entered", .{parent});
+        // Synchronize cancellation with an in-flight configuration request,
+        // rather than accidentally canceling preflight or socket readiness.
+        var attempts: usize = 0;
+        while (true) : (attempts += 1) {
+            _ = std.Io.Dir.cwd().statFile(init.io, marker, .{}) catch |err| switch (err) {
+                error.FileNotFound => {
+                    if (attempts == 300) return error.ConfigurationNotReached;
+                    try init.io.sleep(.fromMilliseconds(10), .awake);
+                    continue;
+                },
+                else => return err,
+            };
+            break;
+        }
+        break :blk future.cancel(init.io);
+    } else vm.boot(options, spec);
+    var booted = result catch |err| {
+        const child_exit = std.mem.eql(u8, mode, "boot-exit") or std.mem.eql(u8, mode, "boot-rollback");
+        const expected: []const u8 = if (cancel) "Canceled" else if (child_exit) "ProcessExited or EndOfStream" else if (std.mem.eql(u8, mode, "boot-timeout") or std.mem.eql(u8, mode, "boot-budget")) "StartupTimeout" else return err;
+        // Socket EOF can become visible before waitid reports process exit.
+        // Preserve that original transport failure rather than delaying cleanup.
+        const matched = if (child_exit) err == error.ProcessExited or err == error.EndOfStream else std.mem.eql(u8, @errorName(err), expected);
+        if (!matched) {
+            std.debug.print("Expected {s}, got {s}\n", .{ expected, @errorName(err) });
+            return error.UnexpectedBootError;
+        }
+        if (err == error.ProcessExited) {
+            switch (vm.last_exit orelse return error.MissingExitStatus) {
+                .exited => |code| if (code != 23) return error.WrongExitCode,
+                else => return error.WrongExitKind,
+            }
+        }
+        try finishBootFailure(&vm, std.mem.eql(u8, mode, "boot-rollback"));
+        std.debug.print("PASS {s}\n", .{mode});
+        return;
+    };
+    defer booted.deinit();
+    switch (booted) {
+        .fault => |fault| {
+            if (!std.mem.startsWith(u8, mode, "boot-reject-") and !std.mem.eql(u8, mode, "boot-fault-rollback"))
+                return error.UnexpectedFault;
+            if (fault.status != 422 or !std.mem.eql(u8, fault.body, "{\"fault_message\":\"boot rejected\"}"))
+                return error.WrongFault;
+            try finishBootFailure(&vm, std.mem.eql(u8, mode, "boot-fault-rollback"));
+        },
+        .success => {
+            if (!std.mem.eql(u8, mode, "boot-success")) return error.UnexpectedSuccess;
+            if (vm.workspace == null or vm.process == null or vm.connection == null or vm.cleanup_error != null)
+                return error.MissingBootOwnership;
+            const client = try vm.client();
+            var info = try client.getInstanceInfo();
+            defer info.deinit();
+            switch (info) {
+                .success => |value| if (!std.mem.eql(u8, value.state, "Running")) return error.UnexpectedInstanceState,
+                .fault => return error.InstanceInfoRejected,
+            }
+            if (vm.boot(options, spec)) |value| {
+                var unexpected = value;
+                unexpected.deinit();
+                return error.ReconfiguredRunningInstance;
+            } else |err| {
+                if (err != error.AlreadyStarted) return err;
+            }
+            try vm.shutdown(1000);
+            try vm.shutdown(1000);
+        },
+    }
+    std.debug.print("PASS {s}\n", .{mode});
+}
+
+fn finishBootFailure(vm: *fc.runtime.Vm, retained_workspace: bool) !void {
+    if (vm.process != null or vm.connection != null) return error.LiveBootResources;
+    if (retained_workspace) {
+        if (vm.cleanup_error == null or vm.workspace == null)
+            return error.LostRollbackOwnership;
+        var dir = try std.Io.Dir.cwd().openDir(vm.io, vm.workspace.?.path, .{});
+        defer dir.close(vm.io);
+        _ = try dir.statFile(vm.io, "borrowed", .{});
+        try dir.deleteFile(vm.io, "borrowed");
+    } else if (vm.cleanup_error != null or vm.workspace != null) return error.RollbackFailed;
+    try vm.shutdown(1000);
+    if (vm.workspace != null or vm.cleanup_error != null) return error.RollbackFailed;
+    try vm.shutdown(1000);
 }
 
 fn assertNoChildren() void {

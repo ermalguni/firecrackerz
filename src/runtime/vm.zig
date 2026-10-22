@@ -5,6 +5,8 @@ const Workspace = @import("artifacts/workspace.zig").Workspace;
 const Supervisor = @import("../internal/supervisor.zig");
 const firecracker = @import("process/firecracker.zig");
 const api = @import("readiness/api.zig");
+const BootSpec = @import("spec.zig").BootSpec;
+const boot_execution = @import("execution/start.zig");
 
 pub const StartOptions = struct {
     executable: []const u8,
@@ -13,8 +15,9 @@ pub const StartOptions = struct {
     request_timeout_ms: u32 = 3000,
 };
 
-/// Linux-only owned API-ready instance, not a booted guest. Do not copy after
-/// start. Allocator and Io must outlive this handle. All access is sequential;
+/// Linux-only owned Firecracker instance. API readiness and accepted guest start
+/// are distinct from guest readiness. Do not copy after start/boot.
+/// Allocator and Io must outlive this handle. All access is sequential;
 /// no external child waiters or SIGCHLD auto-reaping may consume its child.
 pub const Vm = struct {
     allocator: std.mem.Allocator,
@@ -37,6 +40,28 @@ pub const Vm = struct {
     /// engine fault. Errors and faults kill/reap the child and attempt cleanup;
     /// call shutdown even after failure if cleanup_error is set.
     pub fn start(self: *Vm, options: StartOptions) !engine.Result(void) {
+        return self.startUntil(options, startupDeadline(self.io, options));
+    }
+
+    /// Launches a fresh instance, configures it, and requests guest start.
+    /// Options/spec are borrowed for this call. Success is not guest readiness.
+    /// The startup deadline covers launch and all configuration requests. No
+    /// writes are retried, including an ambiguously completed InstanceStart.
+    /// Failure discards the owned instance, never borrowed artifacts; failed
+    /// cleanup retains ownership and diagnostics for shutdown to retry.
+    pub fn boot(self: *Vm, options: StartOptions, spec: BootSpec) !engine.Result(void) {
+        const deadline = startupDeadline(self.io, options);
+        // startUntil owns its own rollback. In particular AlreadyStarted must
+        // not destroy a previously launched instance.
+        const launched = try self.startUntil(options, deadline);
+        if (launched == .fault) return launched;
+        errdefer self.rollback();
+        const result = try boot_execution.run(self.io, &self.connection.?, &self.process.?, spec, deadline);
+        if (result == .fault) self.rollback();
+        return result;
+    }
+
+    fn startUntil(self: *Vm, options: StartOptions, deadline: std.Io.Timeout) !engine.Result(void) {
         if (builtin.os.tag != .linux) return error.UnsupportedPlatform;
         if (self.workspace != null or self.process != null or self.connection != null)
             return error.AlreadyStarted;
@@ -46,10 +71,6 @@ pub const Vm = struct {
             return error.InvalidExecutablePath;
         self.last_exit = null;
         self.cleanup_error = null;
-        const deadline = (std.Io.Timeout{ .duration = .{
-            .raw = .fromMilliseconds(options.startup_timeout_ms),
-            .clock = .awake,
-        } }).toDeadline(self.io);
         errdefer self.rollback();
         try self.io.checkCancel();
         // Validation launches only --version, before acquiring VM resources.
@@ -131,6 +152,10 @@ pub const Vm = struct {
         // Force-kill/reap is uncancelable and may outlast the startup deadline.
         const protection = self.io.swapCancelProtection(.blocked);
         defer _ = self.io.swapCancelProtection(protection);
+        if (self.connection) |*connection| {
+            connection.deinit();
+            self.connection = null;
+        }
         if (self.process) |*process| {
             process.forceKill(self.io);
             self.last_exit = process.term;
@@ -146,3 +171,10 @@ pub const Vm = struct {
         }
     }
 };
+
+fn startupDeadline(io: std.Io, options: StartOptions) std.Io.Timeout {
+    return (std.Io.Timeout{ .duration = .{
+        .raw = .fromMilliseconds(options.startup_timeout_ms),
+        .clock = .awake,
+    } }).toDeadline(io);
+}

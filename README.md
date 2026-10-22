@@ -18,7 +18,7 @@ Connection, live instance-information reads, machine configuration reads/writes,
 `startBalloonHinting()`, `stopBalloonHinting()`, and `getBalloonHintingStatus()` bind the free-page hinting endpoints.
 `putMemoryHotplug()`, `patchMemoryHotplug()`, and `getMemoryHotplug()` bind `PUT/PATCH/GET /hotplug/memory`.
 
-The engine client connects to an existing process. The runtime can launch Firecracker, wait for its API, and terminate/reap it with ownership-safe cleanup. Jailer isolation, image preparation, guest boot orchestration, host networking, guest readiness, and multi-VM management remain application responsibilities. See [Runtime lifecycle](#runtime-lifecycle).
+The engine client connects to an existing process. The runtime can launch Firecracker, wait for its API, configure and start a guest, and terminate/reap it with ownership-safe cleanup. Jailer isolation, image preparation, host networking, guest readiness, and multi-VM management remain application responsibilities. See [Runtime lifecycle](#runtime-lifecycle).
 
 ## Requirements
 
@@ -1305,8 +1305,9 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 ## Runtime lifecycle
 
 `runtime.Vm` owns one direct Firecracker child, a new mode-0700 workspace, and
-an `engine.Client`. It does **not** boot a guest. Use on a trusted local Linux
-host; this is not jailer isolation for untrusted workloads.
+an `engine.Client`. `start` stops at API readiness; `boot` additionally configures
+and starts a guest. Use on a trusted local Linux host; this is not jailer
+isolation for untrusted workloads.
 
 ```sh
 zig build api-ready -- /usr/bin/firecracker /tmp
@@ -1317,12 +1318,27 @@ reads live instance information, and shuts down. It supplies no kernel, rootfs,
 or NIC configuration. Real Firecracker v1.17.0 verification returned
 `state=Not started`, then reaped the child and removed the private workspace.
 
+To configure and start a disposable guest with caller-provided images:
+
+```sh
+zig build boot -- /usr/bin/firecracker /tmp /images/vmlinux /images/rootfs.ext4 --disposable
+```
+
+[`examples/runtime/boot.zig`](examples/runtime/boot.zig) uses 1 vCPU, 128 MiB,
+a read-only root drive, and `root=/dev/vda ro` kernel arguments. It reads live
+instance state after the start action is accepted, then explicitly shuts down.
+It does **not** wait for guest readiness or demonstrate successful guest userspace
+startup. Supply a compatible kernel and root filesystem outside the workspace;
+the example does not prepare images or networking.
+
 ### API and ownership
 
 1. Construct `var vm = firecrackerz.runtime.Vm.init(allocator, io)`.
 2. Call `vm.start(.{ .executable = binary_path, .workspace_parent = parent })`.
    Paths are borrowed during the call. The returned `engine.Result(void)` owns
    any HTTP fault and must be deinitialized; local failures are Zig errors.
+   Alternatively, call `vm.boot(options, spec)` on a fresh handle to configure
+   and start a guest; do not call `start` first.
 3. Borrow `try vm.client()` for sequential engine operations. Never race direct
    engine access with runtime calls or retain the client pointer after shutdown.
 4. Call `try vm.shutdown(timeout_ms)` explicitly, then `vm.deinit()`.
@@ -1332,6 +1348,26 @@ error handling. Do not copy a live handle or mutate its owned resource fields.
 The allocator and native Linux I/O implementation must outlive it.
 Owned engine results retain their usual lifetime rules: they may outlive the
 VM, but not their allocator, and must be deinitialized separately.
+
+`boot(self: *Vm, options: runtime.StartOptions, spec: runtime.BootSpec)`
+returns `!engine.Result(void)`, like `start`. Its specification is:
+
+```zig
+pub const BootSpec = struct {
+    machine: engine.models.MachineConfigurationRequest,
+    boot_source: engine.models.BootSourceRequest,
+    drives: []const engine.models.DriveRequest = &.{},
+};
+```
+
+`boot` is a fresh-instance-only operation, not a way to configure an already
+started or attached instance. After API readiness it sends machine configuration,
+boot source, each drive in slice order, and finally `InstanceStart`, sequentially
+and without retries. It stops at the first failure. Success means the start
+action was accepted, **not guest readiness**; the child can exit immediately
+afterward. `start` remains API-ready-only and does not send configuration or
+start actions. Inputs, including nested strings and the drive slice, are borrowed
+for the call and are not retained.
 
 `StartOptions` provides `executable`, `workspace_parent`, `startup_timeout_ms`
 (default 3000), and `request_timeout_ms` (default 3000). Timeouts must be nonzero.
@@ -1352,16 +1388,20 @@ engine handshake still performs its own discovery and running-version check,
 so preflight does not bypass connection compatibility validation.
 
 Preflight and the complete engine handshake share one monotonic startup budget.
-After launch, readiness races the handshake against child exit and the remaining
-deadline. Cancellation uses Zig `std.Io` task cancellation.
+For `boot`, that same `startup_timeout_ms` budget also covers every configuration
+request and `InstanceStart`; it is not reset between stages. Individual requests
+are also bounded by `request_timeout_ms` and the remaining startup budget.
+After launch, API readiness and boot operations race child exit and the remaining
+deadline. Cancellation uses Zig `std.Io` task cancellation and reports `Canceled`.
 `ProcessExited` preserves the child's termination status in `vm.last_exit`;
-deadline expiry reports `StartupTimeout`. API readiness is only an observation:
-the child can exit afterward, and it says nothing about guest readiness.
+deadline expiry reports `StartupTimeout`. API readiness and start acceptance are
+only observations and say nothing about guest readiness.
 The budget also includes preparing the workspace and launching, but filesystem
 and OS spawn calls are not themselves interruptible deadline waits.
 
-On startup error or HTTP rejection, runtime forcibly kills/reaps any child for
-which spawning returned an ownership handle, then attempts workspace cleanup.
+On startup or boot error or HTTP rejection, runtime closes the engine connection,
+forcibly kills/reaps any child for which spawning returned an ownership handle,
+then attempts workspace cleanup. HTTP faults retain their status and body.
 Rollback is uncancelable and can exceed the startup deadline while reaping,
 particularly if a child is stuck in kernel I/O.
 The original error/fault is preserved. If file cleanup fails, `vm.cleanup_error`
@@ -1378,8 +1418,12 @@ the inactive handle and asserts that no owned resources remain.
 
 Cleanup removes only the owned API socket and empty workspace, never recursively
 deleting unexpected contents. Existing sockets/directories are never reused.
-Borrowed artifacts must live outside the workspace. A trusted parent directory
-is required; hostile same-UID filesystem mutation is not supported.
+Borrowed kernels, initrds, and drive images must live outside the workspace.
+Runtime never stages, copies, deletes, or rolls back those artifacts. A writable
+drive can be modified by the guest even if boot later fails; cleanup cannot undo
+those writes. Use read-only drives or caller-prepared disposable copies when
+preservation matters. A trusted parent directory is required; hostile same-UID
+filesystem mutation is not supported.
 
 The runtime is the sole child waiter: applications must not reap its PID or use
 SIGCHLD auto-reaping. There is no automatic restart, process-tree supervision,
@@ -1405,7 +1449,8 @@ can restore the failed-exec cleanup guarantee when using `std.process.spawn`.
 | `zig build discovery-test` | Run the same combined protocol scenarios |
 | `zig build runtime-test` | Exercise disposable child processes, cancellation, API deadlines, termination, and cleanup |
 | `zig build api-ready -- EXECUTABLE WORKSPACE_PARENT` | Launch, inspect, and stop a disposable Firecracker instance without booting a guest |
-| `zig build examples` | Build and install engine examples and the runtime API-ready example |
+| `zig build boot -- EXECUTABLE WORKSPACE_PARENT KERNEL ROOTFS --disposable` | Configure and start a guest with a read-only root drive, inspect live state, and explicitly stop it; no guest-readiness check |
+| `zig build examples` | Build and install engine examples and the runtime API-ready and boot examples |
 | `zig build inspect -- SOCKET EXECUTABLE` | Print verified metadata, live instance information, and current machine configuration |
 | `zig build integration -- SOCKET EXECUTABLE` | Run the inspection example against a disposable real instance |
 | `zig build configure-test -- SOCKET EXECUTABLE --disposable` | Mutate a disposable pre-boot instance; verify readback, optional-field reset, and invalid-update rejection |

@@ -51,6 +51,20 @@ pub fn build(b: *std.Build) void {
     api_ready_run.addPassthruArgs();
     b.step("api-ready", "Launch, inspect, and stop a disposable instance (-- EXECUTABLE WORKSPACE_PARENT)").dependOn(&api_ready_run.step);
 
+    const boot = b.addExecutable(.{
+        .name = "boot",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/runtime/boot.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "firecrackerz", .module = mod }},
+        }),
+    });
+    check.dependOn(&boot.step);
+    const boot_run = b.addRunArtifact(boot);
+    boot_run.addPassthruArgs();
+    b.step("boot", "Boot, inspect, and stop a disposable guest (-- EXECUTABLE WORKSPACE_PARENT KERNEL ROOTFS --disposable)").dependOn(&boot_run.step);
+
     const codegen_step = b.step("codegen", "Generate version-specific Firecracker API models");
     inline for (.{ "v1_17", "v1_18" }) |version| {
         const openapi_codegen = b.addSystemCommand(&.{"openapi2zig"});
@@ -124,6 +138,7 @@ pub fn build(b: *std.Build) void {
 
     const examples = b.step("examples", "Build library usage examples");
     examples.dependOn(&b.addInstallArtifact(api_ready, .{}).step);
+    examples.dependOn(&b.addInstallArtifact(boot, .{}).step);
     inline for (.{ "inspect", "configure_and_start", "observability" }) |name| {
         const exe = b.addExecutable(.{
             .name = name,
