@@ -73,6 +73,12 @@ pub const Client = struct {
         return operations.getMachineConfiguration(self.allocator, &self.transport, self.backend);
     }
 
+    /// Exports all VM resource configuration, not guest state or MMDS contents.
+    /// The owned result and its nested data may outlive the client.
+    pub fn getVmConfiguration(self: *Client) !results.Result(models.FullVmConfiguration) {
+        return operations.getVmConfiguration(self.allocator, &self.transport, self.backend);
+    }
+
     /// Pre-boot replacement, not PATCH: omitted optional fields reset to defaults.
     /// Request data is borrowed during the call. No automatic retries.
     pub fn putMachineConfiguration(self: *Client, request: models.MachineConfigurationRequest) !results.Result(void) {

@@ -8,6 +8,8 @@ Connection, live instance-information reads, machine configuration reads/writes,
 
 `sendCtrlAltDel()`, `createSnapshot()`, and `loadSnapshot()` are also implemented. Other device configuration, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
+`getVmConfiguration()` exports the full VM resource configuration via `GET /vm/config`.
+
 The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, guest readiness checks, and process cleanup remain application responsibilities.
 
 ## Requirements
@@ -83,6 +85,54 @@ All four response fields—`id`, `state`, `vmm_version`, and `app_name`—are re
 Strings are owned by the result, independent of the HTTP response and client. A result may outlive the client but not its allocator; subsequent reads do not mutate retained results. Call `instance.deinit()` exactly once, do not separately deinitialize the contained value, and do not modify its internal arena.
 
 HTTP 200 is decoded; all other statuses preserve their raw body and status as an owned `.fault`. Malformed JSON, missing/null/non-string required fields, and transport failures return Zig errors. Existing timeout, response-size limit, and no-retry behavior apply. `Running` describes the VM, not guest application readiness.
+
+### Exporting full VM configuration
+
+```zig
+var exported = try client.getVmConfiguration();
+defer exported.deinit();
+
+switch (exported) {
+    .success => |config| {
+        if (config.boot_source) |boot| {
+            std.log.info("Kernel: {s}", .{boot.kernel_image_path});
+        }
+        for (config.drives orelse &.{}) |drive| {
+            std.log.info("Drive: {s}", .{drive.drive_id});
+        }
+    },
+    .fault => |fault| std.log.err("VM configuration HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+Returns `Result(models.FullVmConfiguration)` with typed `boot_source`,
+`machine_config`, `drives`, `network_interfaces`, `cpu_config`, `balloon`,
+`vsock`, `entropy`, `mmds_config`, `logger`, `metrics`, `pmem`, and
+`memory_hotplug` fields. These cover the pinned v1.17 full-configuration schema;
+it does not include MMDS contents, serial-console configuration, or guest state.
+Existing request-shaped models are reused for matching nested configuration
+values; this read does not add write endpoints for the additional devices.
+
+All top-level fields are optional. Missing/null resources remain null, empty
+arrays remain empty, and explicit zero/false/empty-string values are preserved.
+For snapshot-restored VMs, upstream documents boot-source, machine-config.smt,
+and machine-config.cpu_template as empty; callers must not infer boot settings
+from them. Unknown JSON fields are ignored.
+
+The enclosing result owns every nested string, slice, and metrics property map.
+It may outlive the client, but not its allocator. Call `exported.deinit()` exactly
+once; do not separately free nested data or modify the internal arena.
+Only HTTP 200 is decoded. Other statuses return owned faults; malformed JSON,
+invalid nested required fields, and transport failures return Zig errors.
+The existing request timeout, 64 KiB response limit, and no-retry behavior apply.
+
+The `inspect` example also calls this endpoint. Verification includes a live
+read from a disposable Firecracker v1.17.0 process before boot, plus Unix-socket
+protocol scenarios for nested resources, retained-result ownership across a
+second read and client destruction, snapshot-shaped omissions, malformed
+responses, HTTP faults, timeouts, disconnects, and oversized responses.
 
 ### Reading machine configuration
 

@@ -50,6 +50,102 @@ pub const MachineConfiguration = struct {
     }
 };
 
+/// Owned full resource configuration. Nested values borrow this result's arena;
+/// release only the enclosing result. Missing and null resources remain null.
+/// Snapshot restores may omit boot_source, machine_config.smt and cpu_template.
+pub const FullVmConfiguration = struct {
+    boot_source: ?BootSourceRequest,
+    machine_config: ?MachineConfigurationRequest,
+    drives: ?[]const DriveRequest,
+    network_interfaces: ?[]const NetworkInterfaceRequest,
+    cpu_config: ?CpuConfiguration,
+    balloon: ?BalloonConfiguration,
+    vsock: ?VsockConfiguration,
+    entropy: ?EntropyConfiguration,
+    mmds_config: ?MmdsConfiguration,
+    logger: ?LoggerRequest,
+    metrics: ?MetricsRequest,
+    pmem: ?[]const PmemConfiguration,
+    memory_hotplug: ?MemoryHotplugConfiguration,
+    arena: *std.heap.ArenaAllocator,
+
+    pub fn deinit(self: *FullVmConfiguration) void {
+        const allocator = self.arena.child_allocator;
+        self.arena.deinit();
+        allocator.destroy(self.arena);
+        self.* = undefined;
+    }
+};
+
+pub const BalloonConfiguration = struct {
+    amount_mib: i64,
+    deflate_on_oom: bool,
+    stats_polling_interval_s: ?i64 = null,
+    free_page_hinting: ?bool = null,
+    free_page_reporting: ?bool = null,
+};
+
+pub const VsockConfiguration = struct {
+    guest_cid: i64,
+    uds_path: []const u8,
+    vsock_id: ?[]const u8 = null,
+};
+
+pub const EntropyConfiguration = struct {
+    rate_limiter: ?RateLimiter = null,
+};
+
+pub const MmdsConfiguration = struct {
+    network_interfaces: []const []const u8,
+    version: ?[]const u8 = null,
+    imds_compat: ?bool = null,
+    ipv4_address: ?[]const u8 = null,
+};
+
+pub const PmemConfiguration = struct {
+    id: []const u8,
+    path_on_host: []const u8,
+    root_device: ?bool = null,
+    read_only: ?bool = null,
+    rate_limiter: ?RateLimiter = null,
+};
+
+pub const MemoryHotplugConfiguration = struct {
+    total_size_mib: ?i64 = null,
+    slot_size_mib: ?i64 = null,
+    block_size_mib: ?i64 = null,
+};
+
+pub const CpuConfiguration = struct {
+    cpuid_modifiers: ?[]const CpuidLeafModifier = null,
+    kvm_capabilities: ?[]const []const u8 = null,
+    msr_modifiers: ?[]const CpuRegisterModifier = null,
+    vcpu_features: ?[]const VcpuFeatures = null,
+    reg_modifiers: ?[]const CpuRegisterModifier = null,
+};
+
+pub const CpuidLeafModifier = struct {
+    leaf: []const u8,
+    subleaf: []const u8,
+    flags: i64,
+    modifiers: []const CpuidRegisterModifier,
+};
+
+pub const CpuidRegisterModifier = struct {
+    register: []const u8,
+    bitmap: []const u8,
+};
+
+pub const CpuRegisterModifier = struct {
+    addr: []const u8,
+    bitmap: []const u8,
+};
+
+pub const VcpuFeatures = struct {
+    index: i64,
+    bitmap: []const u8,
+};
+
 /// Pre-boot replacement configuration, not a partial update. Strings are borrowed
 /// for the call; null optional fields are omitted and reset to server defaults.
 pub const MachineConfigurationRequest = struct {

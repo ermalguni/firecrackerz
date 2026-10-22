@@ -26,6 +26,17 @@ pub fn getMachineConfiguration(allocator: std.mem.Allocator, transport: *Transpo
     return .{ .success = try backend.decodeMachineConfiguration(allocator, response.body) };
 }
 
+pub fn getVmConfiguration(allocator: std.mem.Allocator, transport: *Transport, backend: Backend) !results.Result(models.FullVmConfiguration) {
+    var response = try transport.get("/vm/config");
+    defer response.deinit();
+    if (response.status != 200) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = try backend.decodeVmConfiguration(allocator, response.body) };
+}
+
 pub fn putMachineConfiguration(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.MachineConfigurationRequest) !results.Result(void) {
     const body = try backend.encodeMachineConfiguration(allocator, request);
     defer allocator.free(body);

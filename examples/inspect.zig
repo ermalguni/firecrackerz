@@ -43,6 +43,22 @@ pub fn main(init: std.process.Init) !void {
                     return error.MachineConfigurationRejected;
                 },
             }
+            var exported = try client.getVmConfiguration();
+            defer exported.deinit();
+            switch (exported) {
+                .success => |config| std.debug.print(
+                    "VM configuration: kernel={s}; drives={d}; network_interfaces={d}\n",
+                    .{
+                        if (config.boot_source) |boot| boot.kernel_image_path else "(absent)",
+                        if (config.drives) |drives| drives.len else 0,
+                        if (config.network_interfaces) |interfaces| interfaces.len else 0,
+                    },
+                ),
+                .fault => |fault| {
+                    std.debug.print("VM configuration HTTP {d}: {s}\n", .{ fault.status, fault.body });
+                    return error.VmConfigurationRejected;
+                },
+            }
         },
         .fault => |fault| {
             std.debug.print("Firecracker HTTP {d}: {s}\n", .{ fault.status, fault.body });
