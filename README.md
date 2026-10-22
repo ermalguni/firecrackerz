@@ -4,7 +4,7 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 ## Status and scope
 
-Connection, live instance-information reads, machine configuration reads/writes, boot-source configuration, drive configuration, and instance start are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getInstanceInfo()`, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `startInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
+Connection, live instance-information reads, machine configuration reads/writes, boot-source configuration, drive and network-interface configuration, and instance start are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getInstanceInfo()`, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `putGuestNetworkInterface()`, `startInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
 
 Other device configuration, other action methods, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
@@ -189,6 +189,44 @@ switch (drive) {
 
 Strings are borrowed for the call. Image and socket paths belong to the **Firecracker process's filesystem namespace**; the client does not open, upload, or rewrite them. The return type is `Result(void)`: HTTP 204 succeeds, other statuses preserve owned raw faults, and transport/allocation errors remain Zig errors. Existing timeouts, response limits, and the no-retry policy apply. Configuration does not format a disk, check for a guest filesystem, or start the guest.
 
+### Configuring a network interface
+
+On a connected, **pre-boot** instance, using a TAP device already prepared for Firecracker:
+
+```zig
+var network = try client.putGuestNetworkInterface(.{
+    .iface_id = "eth0",
+    .host_dev_name = "tap0",
+    .guest_mac = "06:00:00:00:00:01",
+    .mtu = 1500,
+    .rx_rate_limiter = .{
+        .bandwidth = .{ .size = 1048576, .refill_time = 100 },
+    },
+});
+defer network.deinit();
+
+switch (network) {
+    .success => {},
+    .fault => |fault| std.log.err("Network interface rejected: HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+`models.NetworkInterfaceRequest` requires `iface_id` and `host_dev_name`. Optional fields are `guest_mac`, `mtu`, `rx_rate_limiter`, and `tx_rate_limiter`. Both limiters reuse `RateLimiter` and `TokenBucket` above. Null fields are omitted recursively; explicit zero, empty strings, and empty limiter objects are preserved. The optional MTU is advertised to compatible guest drivers; Firecracker validates its range (68–65535), the MAC, rate limits, and device/lifecycle restrictions.
+
+`PUT /network-interfaces/{iface_id}` creates or replaces a pre-boot interface, not a partial update. One ID supplies both the JSON body and the percent-escaped URL path segment. Escaping prevents route/query injection; invalid IDs still produce server faults.
+
+The TAP must exist and be accessible in **Firecracker's network namespace**. The client does not create TAPs, configure host addresses, bridges, routing or NAT, assign guest IP addresses, or wait for guest connectivity. Request strings are borrowed for the call. HTTP 204 returns a successful `Result(void)`; every other status preserves an owned raw fault. Transport/allocation errors remain Zig errors. Existing timeout, response-size limit, and no-retry behavior apply. A timeout does not prove the write failed.
+
+To include an existing TAP in the boot example:
+
+```sh
+zig build configure_and_start -- SOCKET EXECUTABLE KERNEL ROOTFS tap0 --disposable
+```
+
+The optional TAP argument configures interface ID `eth0` before starting the guest. Omitting it preserves disk-only boot. The guest still needs its own network configuration.
+
 ### Starting the instance
 
 After configuring the machine, boot source, and any required devices:
@@ -250,7 +288,7 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 | `zig build configure-test -- SOCKET EXECUTABLE --disposable` | Mutate a disposable pre-boot instance; verify readback, optional-field reset, and invalid-update rejection |
 | `zig build boot-source-test -- SOCKET EXECUTABLE KERNEL INITRD --disposable` | Configure a disposable pre-boot instance; exercise optional arguments, replacement, and invalid paths without starting a guest |
 | `zig build drive-test -- SOCKET EXECUTABLE IMAGE --disposable` | Configure a disposable root drive; exercise replacement, invalid paths, and invalid configuration without starting a guest |
-| `zig build configure_and_start -- SOCKET EXECUTABLE KERNEL ROOTFS --disposable` | Configure 1 vCPU, 128 MiB, kernel, and read-only root drive, then start a disposable guest |
+| `zig build configure_and_start -- SOCKET EXECUTABLE KERNEL ROOTFS [TAP] --disposable` | Configure 1 vCPU, 128 MiB, kernel, read-only root drive, and optional existing TAP, then start a disposable guest |
 | `zig build codegen` | Regenerate version-specific wire models |
 
 Protocol scenarios cover explicit and PATH discovery, supported versions, content-length and chunked responses, version mismatch, preserved HTTP faults, malformed JSON, socket absence, oversized responses, request and discovery timeouts, malformed executable output, process failure, and unsupported releases.
@@ -267,6 +305,10 @@ Boot-source scenarios additionally verify JSON escaping for paths and arguments,
 
 Drive scenarios additionally cover all optional and nested fields, omitted versus explicit zero/false/empty values, socket-only request encoding, and escaped/empty IDs. Live verification on v1.17.0 used a disposable 4 MiB regular backing file: root-drive creation and replacement succeeded, an invalid image child path and negative block size returned owned HTTP 400 faults, and `/vm/config` readback confirmed the restored root drive. This proves configuration, not a bootable filesystem. Vhost-user request encoding is covered locally; a live vhost-user backend was not exercised.
 
+Network-interface protocol scenarios cover omitted fields, independent RX/TX limiters, nested zero values, explicit empty values, MAC/MTU encoding, escaped IDs, long IDs exceeding the stack path buffer, owned faults surviving client destruction, unexpected statuses, timeouts, disconnects, oversized responses, and absence of automatic retries. Live verification on v1.17.0 used a disposable TAP in an isolated user/network namespace: creation and replacement through the client succeeded, and direct `GET /vm/config` readback confirmed the interface ID and TAP name.
+
+End-to-end network verification used the `configure_and_start` example with its TAP argument, Firecracker v1.17.0, the same CI kernel recorded below, and a disposable ext4 image containing a static init program. In an isolated user/network namespace, the guest configured `172.16.0.2/30` and successfully sent a TCP payload to the host-side TAP address `172.16.0.1`. This verifies guest-to-host connectivity, not Internet routing/NAT, DHCP, or rate-limit throughput.
+
 Instance-start protocol scenarios cover the action payload, empty 204 success, owned faults surviving client destruction, unexpected 200 responses, timeouts, disconnects, oversized faults, and absence of automatic retries. Live verification used Firecracker v1.17.0, the upstream CI x86_64 kernel `firecracker-ci/20261021-1e5fcc27b59f-0/x86_64/vmlinux-6.1.188`, and a temporary ext4 root filesystem with a static minimal init program. The configure-and-start example succeeded, `GET /` reported `Running`, and serial output confirmed the init program ran. Direct API probes rejected unconfigured and repeated starts with HTTP 400. This is a minimal boot smoke check, not verification of a production guest or application.
 
 Use a disposable instance for general integration checks. The inspection example sends only `GET /version`, `GET /`, and `GET /machine-config`; it does not configure or boot a guest.
@@ -277,7 +319,7 @@ Use a disposable instance for general integration checks. The inspection example
 
 `drive-test` **writes** and requires `--disposable`. Supply a regular image file readable by Firecracker. It creates/replaces the `rootfs` drive, checks invalid updates, and leaves a read-only root drive with optional settings omitted. It never starts the guest.
 
-`configure_and_start` **writes configuration and starts the guest**; it requires `--disposable`. Supply an uncompressed guest kernel and a bootable root filesystem readable in Firecracker's namespace. The example uses a read-only root drive and `console=ttyS0 reboot=k panic=0`; a panicking guest remains stopped in the panic handler rather than rebooting automatically. The caller owns readiness checks and shutdown/cleanup. Configuration is sequential and is not rolled back if a later request fails.
+`configure_and_start` **writes configuration and starts the guest**; it requires `--disposable`. Supply an uncompressed guest kernel and a bootable root filesystem readable in Firecracker's namespace. An optional TAP name before `--disposable` configures a network interface; the TAP must already exist in Firecracker's network namespace. The example uses a read-only root drive and `console=ttyS0 reboot=k panic=0`; a panicking guest remains stopped in the panic handler rather than rebooting automatically. The caller owns readiness checks and shutdown/cleanup. Configuration is sequential and is not rolled back if a later request fails.
 
 ## Architecture
 

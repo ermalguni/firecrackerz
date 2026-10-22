@@ -72,10 +72,7 @@ pub fn encodeDrive(allocator: std.mem.Allocator, request: models.DriveRequest) !
         .is_read_only = request.is_read_only,
         .discard = request.discard,
         .path_on_host = request.path_on_host,
-        .rate_limiter = if (request.rate_limiter) |limiter| .{
-            .bandwidth = encodeTokenBucket(limiter.bandwidth),
-            .ops = encodeTokenBucket(limiter.ops),
-        } else null,
+        .rate_limiter = encodeRateLimiter(request.rate_limiter),
         .io_engine = request.io_engine,
         .blk_size = request.blk_size,
         .topology = if (request.topology) |topology| .{
@@ -87,6 +84,26 @@ pub fn encodeDrive(allocator: std.mem.Allocator, request: models.DriveRequest) !
         .socket = request.socket,
     };
     return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+}
+
+pub fn encodeNetworkInterface(allocator: std.mem.Allocator, request: models.NetworkInterfaceRequest) ![]u8 {
+    const value: wire.NetworkInterface = .{
+        .iface_id = request.iface_id,
+        .host_dev_name = request.host_dev_name,
+        .guest_mac = request.guest_mac,
+        .mtu = request.mtu,
+        .rx_rate_limiter = encodeRateLimiter(request.rx_rate_limiter),
+        .tx_rate_limiter = encodeRateLimiter(request.tx_rate_limiter),
+    };
+    return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+}
+
+fn encodeRateLimiter(limiter: ?models.RateLimiter) ?wire.RateLimiter {
+    const value = limiter orelse return null;
+    return .{
+        .bandwidth = encodeTokenBucket(value.bandwidth),
+        .ops = encodeTokenBucket(value.ops),
+    };
 }
 
 fn encodeTokenBucket(bucket: ?models.TokenBucket) ?wire.TokenBucket {

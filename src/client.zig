@@ -91,6 +91,13 @@ pub const Client = struct {
         return operations.putGuestDrive(self.allocator, &self.transport, self.backend, request);
     }
 
+    /// Creates or replaces a pre-boot network interface using an existing TAP.
+    /// The ID selects both path and body. Does not configure host networking.
+    /// Request strings are borrowed; no automatic retries.
+    pub fn putGuestNetworkInterface(self: *Client, request: models.NetworkInterfaceRequest) !results.Result(void) {
+        return operations.putGuestNetworkInterface(self.allocator, &self.transport, self.backend, request);
+    }
+
     /// Starts the configured microVM once. Success is not guest readiness.
     /// Never retried: a timeout/disconnect can leave the VM running.
     /// Firecracker validates configuration and lifecycle; no local state is cached.

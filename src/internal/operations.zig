@@ -50,6 +50,18 @@ pub fn putGuestDrive(allocator: std.mem.Allocator, transport: *Transport, backen
     return putEmpty(allocator, transport, path, body);
 }
 
+pub fn putGuestNetworkInterface(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.NetworkInterfaceRequest) !results.Result(void) {
+    const body = try backend.encodeNetworkInterface(allocator, request);
+    defer allocator.free(body);
+    // Keep the interface ID within one escaped path segment.
+    var buffer: [512]u8 = undefined;
+    const args = .{std.fmt.alt(@as(std.Uri.Component, .{ .raw = request.iface_id }), .formatEscaped)};
+    const path = std.mem.print(&buffer, "/network-interfaces/{f}", args) catch
+        try std.fmt.allocPrint(allocator, "/network-interfaces/{f}", args);
+    defer if (path.ptr != &buffer) allocator.free(path);
+    return putEmpty(allocator, transport, path, body);
+}
+
 pub fn startInstance(allocator: std.mem.Allocator, transport: *Transport) !results.Result(void) {
     // Identical for supported contracts. A fixed action needs no request allocation.
     return putEmpty(allocator, transport, "/actions", "{\"action_type\":\"InstanceStart\"}");

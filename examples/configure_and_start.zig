@@ -4,8 +4,8 @@ const fc = @import("firecrackerz");
 /// Starts an existing, application-owned disposable Firecracker process.
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len != 6 or !std.mem.eql(u8, args[5], "--disposable")) {
-        std.debug.print("Usage: {s} SOCKET EXECUTABLE KERNEL ROOTFS --disposable (configures and starts the guest)\n", .{args[0]});
+    if ((args.len != 6 and args.len != 7) or !std.mem.eql(u8, args[args.len - 1], "--disposable")) {
+        std.debug.print("Usage: {s} SOCKET EXECUTABLE KERNEL ROOTFS [TAP] --disposable (configures and starts the guest)\n", .{args[0]});
         return error.InvalidArguments;
     }
     var connected = try fc.Client.connect(init.gpa, init.io, .{
@@ -41,6 +41,15 @@ pub fn main(init: std.process.Init) !void {
             });
             defer drive.deinit();
             try requireSuccess(&drive, "Root drive");
+
+            if (args.len == 7) {
+                var network = try client.putGuestNetworkInterface(.{
+                    .iface_id = "eth0",
+                    .host_dev_name = args[5],
+                });
+                defer network.deinit();
+                try requireSuccess(&network, "Network interface");
+            }
 
             var started = try client.startInstance();
             defer started.deinit();

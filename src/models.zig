@@ -88,6 +88,18 @@ pub const DriveRequest = struct {
     socket: ?[]const u8 = null,
 };
 
+/// Pre-boot network interface creation/replacement. Strings are borrowed for
+/// the call. The TAP device must already exist in Firecracker's network namespace.
+/// Firecracker validates MAC, MTU, rate limits, and lifecycle restrictions.
+pub const NetworkInterfaceRequest = struct {
+    iface_id: []const u8,
+    host_dev_name: []const u8,
+    guest_mac: ?[]const u8 = null,
+    mtu: ?i64 = null,
+    rx_rate_limiter: ?RateLimiter = null,
+    tx_rate_limiter: ?RateLimiter = null,
+};
+
 pub const RateLimiter = struct {
     bandwidth: ?TokenBucket = null,
     ops: ?TokenBucket = null,
