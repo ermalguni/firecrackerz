@@ -1429,6 +1429,42 @@ The original error/fault is preserved. If file cleanup fails, `vm.cleanup_error`
 records that failure and the handle retains its workspace: resolve the cause
 and retry `shutdown` before calling `deinit`.
 
+### Observing process exit
+
+```zig
+pub fn pollExit(self: *Vm) !?std.process.Child.Term;
+pub fn waitExit(self: *Vm, timeout_ms: u32) !std.process.Child.Term;
+```
+
+`pollExit` performs a nonblocking observation: `null` means no terminal status
+was observed. `waitExit` waits without signaling the child, using a monotonic
+deadline and cancellation-safe nonblocking reaping. A zero timeout returns
+`InvalidTimeout`; deadline expiry returns `Timeout` (not `StartupTimeout`).
+Cancellation returns `Canceled`. Timeout, cancellation, and OS errors preserve
+ownership, so callers can observe again or explicitly shut down.
+
+Both methods record the exact exit code or terminating signal in `last_exit`.
+Repeated observations return the cached status, including after shutdown or a
+startup rollback that recorded an exit; the child is reaped only once. With
+neither an owned child nor a recorded exit, they return `NotStarted`. A new
+valid startup attempt clears the previous status before acquiring resources.
+`waitExit(0)` is invalid even when an exit is cached.
+
+Observation does not close the engine client or delete the workspace.
+Call `shutdown` before `deinit`, even after observing exit. Shutdown of an
+already-reaped child preserves its status and performs the remaining cleanup.
+Process exit is not proof of guest success and never triggers automatic restart.
+Do not run observation concurrently with boot, shutdown, other observation,
+or engine access. Cached results return immediately; uncached waits poll at
+up to 10ms intervals, and scheduler delays can exceed the requested deadline.
+
+Disposable real-child scenarios cover a live poll, normal and signal exit,
+timeout and cancellation followed by usable engine access and successful
+observation, repeated status reads before/after shutdown, and cleanup without
+remaining live children or zombies. These checks require neither KVM nor a guest.
+
+### Shutdown and cleanup
+
 Shutdown closes the client, sends SIGTERM, and reserves half its process
 deadline for exit before escalating to SIGKILL. It reaps before deleting files.
 This is process termination, **not graceful guest shutdown**. Timeout,

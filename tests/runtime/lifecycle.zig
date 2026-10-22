@@ -7,6 +7,8 @@ pub fn main(init: std.process.Init) !void {
     const mode = args[3];
     if (std.mem.startsWith(u8, mode, "boot-"))
         return runBoot(init, args[1], args[2], mode);
+    if (std.mem.startsWith(u8, mode, "observe-"))
+        return runObservation(init, args[1], args[2], mode);
     var vm = fc.runtime.Vm.init(init.gpa, init.io);
     defer vm.deinit();
     defer assertNoChildren();
@@ -97,6 +99,77 @@ pub fn main(init: std.process.Init) !void {
     }
     try vm.shutdown(1000);
     std.debug.print("PASS {s}\n", .{mode});
+}
+
+fn runObservation(init: std.process.Init, executable: []const u8, parent: []const u8, mode: []const u8) !void {
+    var vm = fc.runtime.Vm.init(init.gpa, init.io);
+    defer vm.deinit();
+    defer assertNoChildren();
+    defer vm.shutdown(1000) catch @panic("Observation cleanup failed");
+    if (vm.pollExit()) |_| return error.UnexpectedStatus else |err| {
+        if (err != error.NotStarted) return err;
+    }
+    if (vm.waitExit(100)) |_| return error.UnexpectedStatus else |err| {
+        if (err != error.NotStarted) return err;
+    }
+    var started = try vm.start(.{
+        .executable = executable,
+        .workspace_parent = parent,
+        .startup_timeout_ms = 3000,
+    });
+    defer started.deinit();
+    if (started == .fault) return error.StartRejected;
+    if (try vm.pollExit() != null) return error.UnexpectedExit;
+    if (vm.waitExit(0)) |_| return error.UnexpectedStatus else |err| {
+        if (err != error.InvalidTimeout) return err;
+    }
+    if (vm.waitExit(30)) |_| return error.UnexpectedExit else |err| {
+        if (err != error.Timeout) return err;
+    }
+    var future = try init.io.concurrent(fc.runtime.Vm.waitExit, .{ &vm, @as(u32, 10000) });
+    try init.io.sleep(.fromMilliseconds(30), .awake);
+    if (future.cancel(init.io)) |_| return error.UnexpectedExit else |err| {
+        if (err != error.Canceled) return err;
+    }
+    if (try vm.pollExit() != null or vm.process == null or vm.workspace == null or vm.connection == null)
+        return error.LostObservationOwnership;
+    // Engine access remains usable after timeout and cancellation.
+    var info = try (try vm.client()).getInstanceInfo();
+    defer info.deinit();
+    if (info == .fault) return error.InstanceInfoRejected;
+    const trigger = try std.fmt.allocPrint(init.arena.allocator(), "{s}/exit-now", .{parent});
+    const file = try std.Io.Dir.cwd().createFile(init.io, trigger, .{});
+    file.close(init.io);
+    const term = if (std.mem.eql(u8, mode, "observe-poll")) blk: {
+        const deadline = std.Io.Clock.awake.now(init.io).addDuration(.fromSeconds(3));
+        while (true) {
+            if (try vm.pollExit()) |value| break :blk value;
+            if (std.Io.Clock.awake.now(init.io).compare(.gte, deadline)) return error.ExitNotObserved;
+            try init.io.sleep(.fromMilliseconds(10), .awake);
+        }
+    } else try vm.waitExit(3000);
+    if (std.mem.eql(u8, mode, "observe-signal")) {
+        switch (term) {
+            .signal => |signal| if (signal != .TERM) return error.WrongSignal,
+            else => return error.WrongExitKind,
+        }
+    } else switch (term) {
+        .exited => |code| if (code != 23) return error.WrongExitCode,
+        else => return error.WrongExitKind,
+    }
+    try std.testing.expectEqualDeep(term, (try vm.pollExit()).?);
+    try std.testing.expectEqualDeep(term, try vm.waitExit(100));
+    try std.testing.expectEqualDeep(term, vm.last_exit.?);
+    if (vm.workspace == null or vm.connection == null) return error.PrematureCleanup;
+    _ = try std.Io.Dir.cwd().statFile(init.io, vm.workspace.?.path, .{});
+    if (vm.client()) |_| return error.ExitedClient else |err| {
+        if (err != error.ProcessExited) return err;
+    }
+    try vm.shutdown(1000);
+    try std.testing.expectEqualDeep(term, (try vm.pollExit()).?);
+    try std.testing.expectEqualDeep(term, try vm.waitExit(100));
+    if (vm.process != null or vm.workspace != null or vm.connection != null) return error.LiveResources;
+    std.debug.print("PASS {s}: status retained across repeated observation and shutdown\n", .{mode});
 }
 
 fn runBoot(init: std.process.Init, executable: []const u8, parent: []const u8, mode: []const u8) !void {

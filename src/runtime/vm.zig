@@ -104,6 +104,30 @@ pub const Vm = struct {
         }
     }
 
+    /// Nonblocking process-exit observation, not guest readiness or success.
+    /// Reaps once and caches the status, including after shutdown. Returns
+    /// NotStarted when neither an owned process nor a recorded exit exists.
+    /// Does not release the client/workspace; explicit shutdown is still required.
+    pub fn pollExit(self: *Vm) !?std.process.Child.Term {
+        if (self.last_exit) |term| return term;
+        const process = if (self.process) |*value| value else return error.NotStarted;
+        const term = try process.poll(self.io);
+        self.last_exit = term;
+        return term;
+    }
+
+    /// Waits for process exit without signaling it. Zero timeout is invalid;
+    /// Timeout/cancellation preserve ownership for another wait or shutdown.
+    /// Like every Vm operation, must not race engine access or other workflows.
+    pub fn waitExit(self: *Vm, timeout_ms: u32) !std.process.Child.Term {
+        if (timeout_ms == 0) return error.InvalidTimeout;
+        if (self.last_exit) |term| return term;
+        const process = if (self.process) |*value| value else return error.NotStarted;
+        const term = try process.wait(self.io, timeout_ms);
+        self.last_exit = term;
+        return term;
+    }
+
     /// Borrowed sequential engine access. The returned pointer is invalid after
     /// shutdown or moving this handle. Direct lifecycle calls do not establish
     /// guest readiness; runtime does not cache guest lifecycle state.

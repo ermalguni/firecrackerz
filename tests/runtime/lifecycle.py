@@ -54,10 +54,19 @@ if mode == 'combined-deadline':
 server = socket.socket(socket.AF_UNIX)
 server.bind(sys.argv[2])
 server.listen()
+if mode.startswith('observe-'):
+    server.settimeout(0.01)
 running = False
 hung_connections = []
 while True:
-    conn, _ = server.accept()
+    if mode.startswith('observe-') and (root / 'exit-now').exists():
+        if mode == 'observe-signal':
+            os.kill(os.getpid(), signal.SIGTERM)
+        sys.exit(23)
+    try:
+        conn, _ = server.accept()
+    except socket.timeout:
+        continue
     with conn:
         request = b''
         while b'\r\n\r\n' not in request:
@@ -163,6 +172,9 @@ for fixture, expected in [
     ('kill', 'shutdown-cancel'),
     ('rollback', 'rollback'),
     ('normal', 'cleanup'),
+    ('observe-exit', 'observe-exit'),
+    ('observe-poll', 'observe-poll'),
+    ('observe-signal', 'observe-signal'),
     ('boot-success', 'boot-success'),
     ('boot-no-network', 'boot-no-network'),
     ('boot-reject-nic', 'boot-reject-nic'),

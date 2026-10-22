@@ -21,6 +21,23 @@ pub fn poll(self: *Supervisor, io: std.Io) !?Term {
     return self.reap(io, linux.W.NOHANG);
 }
 
+/// Waits without signaling the child. Timeout/cancellation retain ownership.
+/// Uses nonblocking reaping so cancellation cannot lose a successfully reaped PID.
+pub fn wait(self: *Supervisor, io: std.Io, timeout_ms: u32) !Term {
+    if (timeout_ms == 0) return error.InvalidTimeout;
+    const deadline = std.Io.Clock.awake.now(io).addDuration(.fromMilliseconds(timeout_ms));
+    while (true) {
+        if (try self.poll(io)) |term| return term;
+        const now = std.Io.Clock.awake.now(io);
+        if (now.compare(.gte, deadline)) return error.Timeout;
+        const wake = std.Io.Timestamp.fromNanoseconds(@min(
+            deadline.nanoseconds,
+            now.nanoseconds + std.time.ns_per_ms * 10,
+        ));
+        try wake.withClock(.awake).wait(io);
+    }
+}
+
 /// Sends TERM, allows half of `timeout_ms` for graceful exit, then sends KILL.
 /// The remaining half is reserved for reaping; both phases share one monotonic
 /// deadline. A zero timeout returns InvalidTimeout without touching the child.
