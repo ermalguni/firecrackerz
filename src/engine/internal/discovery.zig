@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const version = @import("version.zig");
+const Supervisor = @import("../../internal/supervisor.zig");
 
 pub const Binary = union(enum) {
     executable: []const u8,
@@ -33,7 +34,7 @@ pub fn discover(allocator: std.mem.Allocator, io: std.Io, binary: Binary, timeou
     errdefer allocator.free(path);
 
     // Timing pipe reads is insufficient: a child can close its pipes before
-    // exiting. Race the entire probe, including child.wait, against the deadline.
+    // exiting. Race the entire probe, including exit observation, against the deadline.
     const Completion = union(enum) {
         probe: @typeInfo(@TypeOf(probe)).@"fn".return_type.?,
         timeout: std.Io.Cancelable!void,
@@ -99,18 +100,17 @@ fn resolveCandidate(allocator: std.mem.Allocator, io: std.Io, path: []const u8) 
 }
 
 fn probe(allocator: std.mem.Allocator, io: std.Io, path: []const u8, deadline: std.Io.Timeout) !version.Version {
-    var child = try std.process.spawn(io, .{
+    var supervisor: Supervisor = .{ .child = try std.process.spawn(io, .{
         .exe = .{ .path = .cwd() },
         .argv = &.{ path, "--version" },
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
-    });
-    // kill also reaps the child and closes all pipes; after wait it is a no-op.
-    defer child.kill(io);
+    }) };
+    defer supervisor.forceKill(io);
     var streams: std.Io.File.MultiReader.Buffer(2) = undefined;
     var reader: std.Io.File.MultiReader = undefined;
-    reader.init(allocator, io, streams.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    reader.init(allocator, io, streams.toStreams(), &.{ supervisor.child.stdout.?, supervisor.child.stderr.? });
     defer reader.deinit();
     const stdout = reader.reader(0);
     const stderr = reader.reader(1);
@@ -122,7 +122,11 @@ fn probe(allocator: std.mem.Allocator, io: std.Io, path: []const u8, deadline: s
         else => return err,
     }
     try reader.checkAnyError();
-    switch (try child.wait(io)) {
+    const term = while (true) {
+        if (try supervisor.poll(io)) |term| break term;
+        try io.sleep(.fromMilliseconds(10), .awake);
+    };
+    switch (term) {
         .exited => |code| if (code != 0) return error.ProcessFailed,
         else => return error.ProcessFailed,
     }

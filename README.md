@@ -1,6 +1,6 @@
 # firecrackerz
 
-Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-microvm/firecracker), exposed through `firecrackerz.engine`, with one public client and private version adapters. A separate managed-VM runtime is planned; it is not implemented or exported yet.
+Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-microvm/firecracker), exposed through `firecrackerz.engine`, with one public client and private version adapters. `firecrackerz.runtime` owns a single Linux Firecracker process, private workspace, and API-ready engine connection.
 
 ## Status and scope
 
@@ -18,14 +18,14 @@ Connection, live instance-information reads, machine configuration reads/writes,
 `startBalloonHinting()`, `stopBalloonHinting()`, and `getBalloonHintingStatus()` bind the free-page hinting endpoints.
 `putMemoryHotplug()`, `patchMemoryHotplug()`, and `getMemoryHotplug()` bind `PUT/PATCH/GET /hotplug/memory`.
 
-The engine client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, guest readiness checks, and process cleanup remain application responsibilities until the separate runtime layer is implemented. See [Architecture](#architecture) for that boundary and the planned runtime layout.
+The engine client connects to an existing process. The runtime can launch Firecracker, wait for its API, and terminate/reap it with ownership-safe cleanup. Jailer isolation, image preparation, guest boot orchestration, host networking, guest readiness, and multi-VM management remain application responsibilities. See [Runtime lifecycle](#runtime-lifecycle).
 
 ## Requirements
 
 - Linux and Zig 0.17.0.
-- A trusted Firecracker v1.17.0 executable and an accessible running API socket.
+- A trusted Firecracker v1.17.0 executable. Engine-only usage also requires an existing API socket; runtime usage requires an existing writable workspace parent.
 - Dusty v0.4.0, pinned by commit and package hash in `build.zig.zon`.
-- Python 3 for protocol scenarios; `openapi2zig` on `PATH` only for model generation.
+- Python 3 for engine protocol and runtime lifecycle scenarios; `openapi2zig` on `PATH` only for model generation.
 
 ## Usage
 
@@ -1302,15 +1302,110 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 - Input paths are copied during construction. Failed construction releases partially acquired resources.
 - Concurrent use is not supported.
 
+## Runtime lifecycle
+
+`runtime.Vm` owns one direct Firecracker child, a new mode-0700 workspace, and
+an `engine.Client`. It does **not** boot a guest. Use on a trusted local Linux
+host; this is not jailer isolation for untrusted workloads.
+
+```sh
+zig build api-ready -- /usr/bin/firecracker /tmp
+```
+
+This example launches a disposable instance, completes the version handshake,
+reads live instance information, and shuts down. It supplies no kernel, rootfs,
+or NIC configuration. Real Firecracker v1.17.0 verification returned
+`state=Not started`, then reaped the child and removed the private workspace.
+
+### API and ownership
+
+1. Construct `var vm = firecrackerz.runtime.Vm.init(allocator, io)`.
+2. Call `vm.start(.{ .executable = binary_path, .workspace_parent = parent })`.
+   Paths are borrowed during the call. The returned `engine.Result(void)` owns
+   any HTTP fault and must be deinitialized; local failures are Zig errors.
+3. Borrow `try vm.client()` for sequential engine operations. Never race direct
+   engine access with runtime calls or retain the client pointer after shutdown.
+4. Call `try vm.shutdown(timeout_ms)` explicitly, then `vm.deinit()`.
+
+See [`examples/runtime/api_ready.zig`](examples/runtime/api_ready.zig) for complete
+error handling. Do not copy a live handle or mutate its owned resource fields.
+The allocator and native Linux I/O implementation must outlive it.
+Owned engine results retain their usual lifetime rules: they may outlive the
+VM, but not their allocator, and must be deinitialized separately.
+
+`StartOptions` provides `executable`, `workspace_parent`, `startup_timeout_ms`
+(default 3000), and `request_timeout_ms` (default 3000). Timeouts must be nonzero.
+The executable is invoked directly with `--api-sock`, without a shell or PATH
+search. stdin is `/dev/null`; stdout/stderr, environment, and working directory
+are inherited. No output pipes require a runtime consumer.
+
+Before creating the workspace or launching the managed instance, runtime calls
+`engine.Client.validateExecutable(allocator, io, binary, timeout_ms)`. It checks
+the file type and execute permission, resolves an absolute path, and runs a
+bounded `--version` probe using the engine's existing banner parser and accepted
+version registry. Missing/nonexecutable files, invalid banners, unsupported
+versions, and failed probes stop startup before the managed launch.
+
+This public engine method returns the owned absolute path; callers must free
+it with the supplied allocator. Runtime launches that resolved path. The normal
+engine handshake still performs its own discovery and running-version check,
+so preflight does not bypass connection compatibility validation.
+
+Preflight and the complete engine handshake share one monotonic startup budget.
+After launch, readiness races the handshake against child exit and the remaining
+deadline. Cancellation uses Zig `std.Io` task cancellation.
+`ProcessExited` preserves the child's termination status in `vm.last_exit`;
+deadline expiry reports `StartupTimeout`. API readiness is only an observation:
+the child can exit afterward, and it says nothing about guest readiness.
+The budget also includes preparing the workspace and launching, but filesystem
+and OS spawn calls are not themselves interruptible deadline waits.
+
+On startup error or HTTP rejection, runtime forcibly kills/reaps any child for
+which spawning returned an ownership handle, then attempts workspace cleanup.
+Rollback is uncancelable and can exceed the startup deadline while reaping,
+particularly if a child is stuck in kernel I/O.
+The original error/fault is preserved. If file cleanup fails, `vm.cleanup_error`
+records that failure and the handle retains its workspace: resolve the cause
+and retry `shutdown` before calling `deinit`.
+
+Shutdown closes the client, sends SIGTERM, and reserves half its process
+deadline for exit before escalating to SIGKILL. It reaps before deleting files.
+This is process termination, **not graceful guest shutdown**. Timeout,
+cancellation, or OS failure retains ownership so shutdown can be retried.
+The deadline bounds process polling; filesystem cleanup and scheduling can
+extend elapsed time. Successful shutdown is idempotent. `deinit` only releases
+the inactive handle and asserts that no owned resources remain.
+
+Cleanup removes only the owned API socket and empty workspace, never recursively
+deleting unexpected contents. Existing sockets/directories are never reused.
+Borrowed artifacts must live outside the workspace. A trusted parent directory
+is required; hostile same-UID filesystem mutation is not supported.
+
+The runtime is the sole child waiter: applications must not reap its PID or use
+SIGCHLD auto-reaping. There is no automatic restart, process-tree supervision,
+or persisted recovery. Launching and preflight use Zig `std.process.spawn`;
+there is no runtime C launcher. Shared Linux `waitid` supervision preserves
+ownership of both managed children and version probes across canceled waits.
+
+**Preflight is compatibility validation, not executable authentication or an
+exec-success guarantee.** A version banner can be forged, and files, permissions,
+interpreters, or mount state can change after validation. The installed Zig 0.17
+spawn implementation can lose the child PID on exec failure, leaving a zombie.
+This applies to the version probe as well as the managed launch. Removing the C
+wrapper accepts that standard-library limitation; only a corrected toolchain
+can restore the failed-exec cleanup guarantee when using `std.process.spawn`.
+
 ## Development and verification
 
 | Command | Purpose |
 | --- | --- |
-| `zig build` / `zig build check` | Compile library tests, protocol and configuration runners, and examples |
-| `zig build test` | Run version and discovery unit tests |
+| `zig build` / `zig build check` | Compile library tests, engine/runtime scenario runners, and examples |
+| `zig build test` | Run version, discovery, and workspace ownership unit tests |
 | `zig build protocol` | Run local Unix-socket connection, live instance-information, configuration, instance-start, and subprocess discovery scenarios |
 | `zig build discovery-test` | Run the same combined protocol scenarios |
-| `zig build examples` | Build and install inspection, configure-and-start, and observability examples |
+| `zig build runtime-test` | Exercise disposable child processes, cancellation, API deadlines, termination, and cleanup |
+| `zig build api-ready -- EXECUTABLE WORKSPACE_PARENT` | Launch, inspect, and stop a disposable Firecracker instance without booting a guest |
+| `zig build examples` | Build and install engine examples and the runtime API-ready example |
 | `zig build inspect -- SOCKET EXECUTABLE` | Print verified metadata, live instance information, and current machine configuration |
 | `zig build integration -- SOCKET EXECUTABLE` | Run the inspection example against a disposable real instance |
 | `zig build configure-test -- SOCKET EXECUTABLE --disposable` | Mutate a disposable pre-boot instance; verify readback, optional-field reset, and invalid-update rejection |
@@ -1322,6 +1417,16 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 | `zig build codegen` | Regenerate version-specific wire models |
 
 Protocol scenarios cover explicit and PATH discovery, supported versions, content-length and chunked responses, version mismatch, preserved HTTP faults, malformed JSON, socket absence, oversized responses, request and discovery timeouts, malformed executable output, process failure, and unsupported releases.
+
+Runtime scenarios cover missing/nonexecutable paths, directories, incorrect
+version banners, unsupported/prerelease versions, failed and stalled probes,
+probes that close their pipes or ignore SIGTERM, early child exit, absent and
+stalled APIs, startup/shutdown cancellation, version mismatch, retained HTTP
+faults, delayed readiness, SIGKILL escalation, and retryable cleanup. Preflight
+failures must never launch the managed instance. Tested scenarios leave no
+children (including zombies) and preserve borrowed files. Invalid executable
+formats and missing interpreters are no longer asserted leak-free: those are
+subject to the standard-library exec-failure limitation described above.
 
 Machine configuration scenarios additionally cover a fresh connection after the handshake, repeated reads with retained results, strings and faults surviving client destruction, absent optional fields, missing required fields, and server disconnects.
 
@@ -1357,7 +1462,7 @@ Use a disposable instance for general integration checks. The inspection example
 
 ## Architecture
 
-The repository separates **engine API bindings** from **future runtime orchestration**. Engine never depends on runtime; runtime will use the engine's public client and models, not its internal transport or generated wire types.
+The repository separates **engine API bindings** from **runtime orchestration**. Engine never depends on runtime; runtime uses the engine's public client and models, not its internal transport or generated wire types.
 
 ### Implemented engine layout
 
@@ -1404,31 +1509,34 @@ wire models remain private and are not hand-edited. Existing build command
 names are unchanged; their source paths now point into `tests/engine/` and
 `examples/engine/`.
 
-### Planned runtime layout and ownership
+### Runtime layout and ownership
 
-These paths describe future implementation locations, not currently available
-APIs. There is no empty `runtime` export or placeholder VM implementation.
-When real runtime behavior is added, `src/root.zig` will also export
-`@import("runtime/root.zig")` as `runtime`.
+Implemented:
 
 ```text
 src/runtime/
-├── root.zig                         # Public runtime exports
-├── vm.zig                           # Owned single-VM handle
-├── spec.zig                         # Operational intent + engine models
-├── state.zig                        # Managed lifecycle state
-├── process/                         # Firecracker/jailer launch, supervision
-├── artifacts/                       # Kernels, rootfs, snapshots, workspace
-├── networking/                      # TAP, bridge, routing, NAT, guest config
-├── readiness/                       # API, guest, application probes
-├── telemetry/                       # Read, rotate, ship logs and metrics
-├── execution/                       # Configure/start/stop/snapshot workflows,
-│                                    # ownership, cleanup, reports
-└── manager/                         # VM registry and shared host resources
+├── root.zig                         # Vm and StartOptions exports
+├── vm.zig                           # Single-instance ownership and rollback
+├── process/
+│   └── firecracker.zig              # Direct Zig process launch
+├── artifacts/
+│   └── workspace.zig                # Exclusive private workspace ownership
+└── readiness/
+    └── api.zig                      # Handshake, exit, and deadline race
 
-tests/runtime/
-examples/runtime/
+src/internal/supervisor.zig          # Shared probe/VM exit observation and reaping
+
+tests/runtime/lifecycle.zig
+tests/runtime/lifecycle.py
+examples/runtime/api_ready.zig
 ```
+
+Future responsibilities retain the planned locations: operational intent in
+`spec.zig`, managed guest lifecycle in `state.zig`, jailer launch in `process/`,
+images and snapshots in `artifacts/`, host resources in `networking/`, guest
+and application probes in `readiness/`, output consumption in `telemetry/`,
+workflows in `execution/`, and shared leases/registries in `manager/`. Do not
+create placeholder APIs for those unimplemented capabilities.
 
 - A managed VM generally owns its own process and engine client; a manager
   coordinates multiple VM handles rather than sharing one API socket.

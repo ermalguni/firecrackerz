@@ -35,6 +35,16 @@ pub const Client = struct {
     backend: Backend,
     running_version: version.Version,
 
+    /// Checks a trusted executable with bounded --version discovery and the
+    /// engine's supported-version registry, without connecting to an API socket.
+    /// Returns an owned absolute path; release it with allocator.free.
+    /// This is compatibility validation, not authentication or an exec guarantee.
+    pub fn validateExecutable(allocator: std.mem.Allocator, io: std.Io, binary: Binary, timeout_ms: u32) ![]const u8 {
+        if (timeout_ms == 0) return error.InvalidTimeout;
+        const discovered = try discovery.discover(allocator, io, binary, timeout_ms);
+        return discovered.executable_path;
+    }
+
     /// HTTP rejection is an owned fault result; local failures are Zig errors.
     pub fn connect(allocator: std.mem.Allocator, io: std.Io, options: ConnectOptions) !results.Result(Client) {
         if (options.discovery_timeout_ms == 0 or options.request_timeout_ms == 0) return error.InvalidTimeout;

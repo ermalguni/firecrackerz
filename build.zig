@@ -23,6 +23,34 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&tests.step);
     b.default_step.dependOn(check);
 
+    const runtime_scenarios = b.addExecutable(.{
+        .name = "runtime-scenarios",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/runtime/lifecycle.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "firecrackerz", .module = mod }},
+        }),
+    });
+    check.dependOn(&runtime_scenarios.step);
+    const runtime_run = b.addSystemCommand(&.{ "python3", "tests/runtime/lifecycle.py" });
+    runtime_run.addArtifactArg(runtime_scenarios);
+    b.step("runtime-test", "Exercise disposable runtime children and Unix API sockets").dependOn(&runtime_run.step);
+
+    const api_ready = b.addExecutable(.{
+        .name = "api-ready",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/runtime/api_ready.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "firecrackerz", .module = mod }},
+        }),
+    });
+    check.dependOn(&api_ready.step);
+    const api_ready_run = b.addRunArtifact(api_ready);
+    api_ready_run.addPassthruArgs();
+    b.step("api-ready", "Launch, inspect, and stop a disposable instance (-- EXECUTABLE WORKSPACE_PARENT)").dependOn(&api_ready_run.step);
+
     const codegen_step = b.step("codegen", "Generate version-specific Firecracker API models");
     inline for (.{ "v1_17", "v1_18" }) |version| {
         const openapi_codegen = b.addSystemCommand(&.{"openapi2zig"});
@@ -95,6 +123,7 @@ pub fn build(b: *std.Build) void {
     b.step("drive-test", "Configure a disposable root drive (-- SOCKET EXECUTABLE IMAGE --disposable)").dependOn(&drive_run.step);
 
     const examples = b.step("examples", "Build library usage examples");
+    examples.dependOn(&b.addInstallArtifact(api_ready, .{}).step);
     inline for (.{ "inspect", "configure_and_start", "observability" }) |name| {
         const exe = b.addExecutable(.{
             .name = name,
