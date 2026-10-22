@@ -8,4 +8,7 @@ pub const BootSpec = struct {
     machine: models.MachineConfigurationRequest,
     boot_source: models.BootSourceRequest,
     drives: []const models.DriveRequest = &.{},
+    /// Applied in order after drives. TAPs must already exist and remain caller
+    /// owned; runtime never creates or removes host networking.
+    network_interfaces: []const models.NetworkInterfaceRequest = &.{},
 };

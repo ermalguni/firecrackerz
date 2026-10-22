@@ -3,8 +3,8 @@ const runtime = @import("firecrackerz").runtime;
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len != 6 or !std.mem.eql(u8, args[5], "--disposable")) {
-        std.debug.print("Usage: {s} EXECUTABLE WORKSPACE_PARENT KERNEL ROOTFS --disposable (boots and stops the guest)\n", .{args[0]});
+    if ((args.len != 6 and args.len != 8) or !std.mem.eql(u8, args[5], "--disposable")) {
+        std.debug.print("Usage: {s} EXECUTABLE WORKSPACE_PARENT KERNEL ROOTFS --disposable [TAP GUEST_MAC] (boots and stops the guest; TAP remains caller-owned)\n", .{args[0]});
         return error.InvalidArguments;
     }
     var vm = runtime.Vm.init(init.gpa, init.io);
@@ -28,6 +28,11 @@ pub fn main(init: std.process.Init) !void {
             .path_on_host = args[4],
             .is_read_only = true,
         }},
+        .network_interfaces = if (args.len == 8) &.{.{
+            .iface_id = "eth0",
+            .host_dev_name = args[6],
+            .guest_mac = args[7],
+        }} else &.{},
     }) catch |err| {
         if (vm.last_exit) |term| std.debug.print("Child {f}\n", .{term});
         if (vm.cleanup_error) |cleanup_err| std.debug.print("Cleanup failed: {s}\n", .{@errorName(cleanup_err)});

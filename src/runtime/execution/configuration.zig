@@ -16,6 +16,11 @@ pub fn apply(io: std.Io, client: *engine.Client, spec: BootSpec, deadline: std.I
         const result = try client.putGuestDrive(drive);
         if (result == .fault) return result;
     }
+    for (spec.network_interfaces) |interface| {
+        try checkpoint(io, deadline);
+        const result = try client.putGuestNetworkInterface(interface);
+        if (result == .fault) return result;
+    }
     return .{ .success = {} };
 }
 

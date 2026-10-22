@@ -116,8 +116,12 @@ fn runBoot(init: std.process.Init, executable: []const u8, parent: []const u8, m
         .machine = .{ .vcpu_count = 2, .mem_size_mib = 256, .smt = false, .track_dirty_pages = true },
         .boot_source = .{ .kernel_image_path = kernel, .initrd_path = initrd, .boot_args = "console=ttyS0 reboot=k panic=1 pci=off" },
         .drives = &drives,
+        .network_interfaces = if (std.mem.eql(u8, mode, "boot-no-network")) &.{} else &.{
+            .{ .iface_id = "eth0", .host_dev_name = "caller-tap0", .guest_mac = "02:00:00:00:00:01" },
+            .{ .iface_id = "eth1", .host_dev_name = "caller-tap1", .mtu = 1500 },
+        },
     };
-    const cancel = std.mem.eql(u8, mode, "boot-cancel");
+    const cancel = std.mem.eql(u8, mode, "boot-cancel") or std.mem.eql(u8, mode, "boot-nic-cancel");
     const options: fc.runtime.StartOptions = .{
         .executable = executable,
         .workspace_parent = parent,
@@ -151,7 +155,7 @@ fn runBoot(init: std.process.Init, executable: []const u8, parent: []const u8, m
     } else vm.boot(options, spec);
     var booted = result catch |err| {
         const child_exit = std.mem.eql(u8, mode, "boot-exit") or std.mem.eql(u8, mode, "boot-rollback");
-        const expected: []const u8 = if (cancel) "Canceled" else if (child_exit) "ProcessExited or EndOfStream" else if (std.mem.eql(u8, mode, "boot-timeout") or std.mem.eql(u8, mode, "boot-budget")) "StartupTimeout" else return err;
+        const expected: []const u8 = if (cancel) "Canceled" else if (child_exit) "ProcessExited or EndOfStream" else if (std.mem.eql(u8, mode, "boot-timeout") or std.mem.eql(u8, mode, "boot-budget") or std.mem.eql(u8, mode, "boot-nic-timeout")) "StartupTimeout" else return err;
         // Socket EOF can become visible before waitid reports process exit.
         // Preserve that original transport failure rather than delaying cleanup.
         const matched = if (child_exit) err == error.ProcessExited or err == error.EndOfStream else std.mem.eql(u8, @errorName(err), expected);
@@ -179,7 +183,7 @@ fn runBoot(init: std.process.Init, executable: []const u8, parent: []const u8, m
             try finishBootFailure(&vm, std.mem.eql(u8, mode, "boot-fault-rollback"));
         },
         .success => {
-            if (!std.mem.eql(u8, mode, "boot-success")) return error.UnexpectedSuccess;
+            if (!std.mem.eql(u8, mode, "boot-success") and !std.mem.eql(u8, mode, "boot-no-network")) return error.UnexpectedSuccess;
             if (vm.workspace == null or vm.process == null or vm.connection == null or vm.cleanup_error != null)
                 return error.MissingBootOwnership;
             const client = try vm.client();

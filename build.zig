@@ -63,7 +63,7 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&boot.step);
     const boot_run = b.addRunArtifact(boot);
     boot_run.addPassthruArgs();
-    b.step("boot", "Boot, inspect, and stop a disposable guest (-- EXECUTABLE WORKSPACE_PARENT KERNEL ROOTFS --disposable)").dependOn(&boot_run.step);
+    b.step("boot", "Boot, inspect, and stop a disposable guest (-- EXECUTABLE WORKSPACE_PARENT KERNEL ROOTFS --disposable [TAP GUEST_MAC])").dependOn(&boot_run.step);
 
     const codegen_step = b.step("codegen", "Generate version-specific Firecracker API models");
     inline for (.{ "v1_17", "v1_18" }) |version| {

@@ -1357,17 +1357,38 @@ pub const BootSpec = struct {
     machine: engine.models.MachineConfigurationRequest,
     boot_source: engine.models.BootSourceRequest,
     drives: []const engine.models.DriveRequest = &.{},
+    network_interfaces: []const engine.models.NetworkInterfaceRequest = &.{},
 };
 ```
 
 `boot` is a fresh-instance-only operation, not a way to configure an already
 started or attached instance. After API readiness it sends machine configuration,
-boot source, each drive in slice order, and finally `InstanceStart`, sequentially
-and without retries. It stops at the first failure. Success means the start
+boot source, each drive in slice order, each network interface in slice order,
+and finally `InstanceStart`, sequentially and without retries. It stops at the first failure. Success means the start
 action was accepted, **not guest readiness**; the child can exit immediately
 afterward. `start` remains API-ready-only and does not send configuration or
-start actions. Inputs, including nested strings and the drive slice, are borrowed
-for the call and are not retained.
+start actions. Inputs, including nested strings and the drive/network-interface
+slices, are borrowed for the call and are not retained.
+
+Network interfaces reference existing caller-owned TAPs in Firecracker's network
+namespace. Runtime does not create or delete TAPs, bridges, routes, or NAT rules,
+including on failed boot or shutdown, and does not assign guest IP addresses.
+An empty interface slice preserves network-free boot.
+
+The disposable [`boot` example](examples/runtime/boot.zig) accepts an optional
+TAP name and guest MAC after `--disposable`:
+
+```sh
+zig build boot -- EXECUTABLE WORKSPACE_PARENT KERNEL ROOTFS --disposable tap0 02:00:00:00:00:01
+```
+
+The caller must prepare the TAP and any guest network configuration. The example
+starts and immediately stops the guest; it does not wait for connectivity.
+Runtime scenarios exercise two-NIC ordering, rejection of the second NIC,
+timeout/cancellation during NIC configuration, no retries or subsequent start
+after failure, and child/workspace cleanup. The example's optional NIC path was
+also exercised against a disposable Unix-socket API fixture, not a real TAP/KVM
+guest; host-network preservation was not live-tested.
 
 `StartOptions` provides `executable`, `workspace_parent`, `startup_timeout_ms`
 (default 3000), and `request_timeout_ms` (default 3000). Timeouts must be nonzero.
@@ -1449,7 +1470,7 @@ can restore the failed-exec cleanup guarantee when using `std.process.spawn`.
 | `zig build discovery-test` | Run the same combined protocol scenarios |
 | `zig build runtime-test` | Exercise disposable child processes, cancellation, API deadlines, termination, and cleanup |
 | `zig build api-ready -- EXECUTABLE WORKSPACE_PARENT` | Launch, inspect, and stop a disposable Firecracker instance without booting a guest |
-| `zig build boot -- EXECUTABLE WORKSPACE_PARENT KERNEL ROOTFS --disposable` | Configure and start a guest with a read-only root drive, inspect live state, and explicitly stop it; no guest-readiness check |
+| `zig build boot -- EXECUTABLE WORKSPACE_PARENT KERNEL ROOTFS --disposable [TAP GUEST_MAC]` | Configure and start a guest with a read-only root drive and optional existing TAP, inspect live state, and explicitly stop it; no guest-readiness check |
 | `zig build examples` | Build and install engine examples and the runtime API-ready and boot examples |
 | `zig build inspect -- SOCKET EXECUTABLE` | Print verified metadata, live instance information, and current machine configuration |
 | `zig build integration -- SOCKET EXECUTABLE` | Run the inspection example against a disposable real instance |

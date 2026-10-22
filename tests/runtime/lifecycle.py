@@ -97,19 +97,26 @@ while True:
             body = json.dumps({'id': 'runtime-test', 'state': 'Running' if running else 'Not started', 'vmm_version': '1.17.0', 'app_name': 'Firecracker'}).encode()
         elif mode.startswith('boot-'):
             assert method == 'PUT', (method, route)
-            assert route in ('/machine-config', '/boot-source', '/drives/rootfs', '/drives/data', '/actions'), route
+            assert route in ('/machine-config', '/boot-source', '/drives/rootfs', '/drives/data', '/network-interfaces/eth0', '/network-interfaces/eth1', '/actions'), route
             if route == '/boot-source':
-                (root / 'config-entered').touch()
+                if mode == 'boot-cancel':
+                    (root / 'config-entered').touch()
                 if mode in ('boot-rollback', 'boot-fault-rollback'):
                     pathlib.Path(sys.argv[2]).with_name('borrowed').write_text('keep')
                 if mode in ('boot-exit', 'boot-rollback'):
                     sys.exit(23)
                 if mode == 'boot-cancel':
                     time.sleep(30)
+            if route == '/network-interfaces/eth1' and mode in ('boot-nic-cancel', 'boot-nic-timeout'):
+                (root / 'config-entered').touch()
+                # Continue accepting to expose accidental retries.
+                hung_connections.append(conn.dup())
+                continue
             rejected = {
                 'boot-reject-machine': '/machine-config',
                 'boot-reject-source': '/boot-source',
                 'boot-reject-drive': '/drives/rootfs',
+                'boot-reject-nic': '/network-interfaces/eth1',
                 'boot-reject-start': '/actions',
                 'boot-fault-rollback': '/boot-source',
             }.get(mode)
@@ -157,6 +164,10 @@ for fixture, expected in [
     ('rollback', 'rollback'),
     ('normal', 'cleanup'),
     ('boot-success', 'boot-success'),
+    ('boot-no-network', 'boot-no-network'),
+    ('boot-reject-nic', 'boot-reject-nic'),
+    ('boot-nic-timeout', 'boot-nic-timeout'),
+    ('boot-nic-cancel', 'boot-nic-cancel'),
     ('boot-reject-machine', 'boot-reject-machine'),
     ('boot-reject-source', 'boot-reject-source'),
     ('boot-reject-drive', 'boot-reject-drive'),
@@ -214,20 +225,31 @@ for fixture, expected in [
                     'drive_id': 'data', 'is_root_device': False, 'is_read_only': False,
                     'path_on_host': str(root / 'data disk'),
                 }},
+                {'method': 'PUT', 'path': '/network-interfaces/eth0', 'body': {
+                    'iface_id': 'eth0', 'host_dev_name': 'caller-tap0', 'guest_mac': '02:00:00:00:00:01',
+                }},
+                {'method': 'PUT', 'path': '/network-interfaces/eth1', 'body': {
+                    'iface_id': 'eth1', 'host_dev_name': 'caller-tap1', 'mtu': 1500,
+                }},
                 {'method': 'PUT', 'path': '/actions', 'body': {'action_type': 'InstanceStart'}},
             ]
             request_count = {
                 'boot-reject-machine': 2,
                 'boot-reject-source': 3,
                 'boot-reject-drive': 4,
-                'boot-reject-start': 6,
-                'boot-timeout': 6,
+                'boot-reject-nic': 7,
+                'boot-nic-timeout': 7,
+                'boot-nic-cancel': 7,
+                'boot-reject-start': 8,
+                'boot-timeout': 8,
                 'boot-cancel': 3,
                 'boot-exit': 3,
                 'boot-rollback': 3,
                 'boot-fault-rollback': 3,
             }.get(fixture)
-            if fixture == 'boot-success':
+            if fixture == 'boot-no-network':
+                expected_requests = [r for r in expected_requests if not r['path'].startswith('/network-interfaces/')]
+            if fixture in ('boot-success', 'boot-no-network'):
                 expected_requests.append({'method': 'GET', 'path': '/', 'body': None})
             elif fixture == 'boot-budget':
                 # A single 700ms budget cannot finish the 300ms preflight,
@@ -237,7 +259,7 @@ for fixture, expected in [
             else:
                 expected_requests = expected_requests[:request_count]
             assert requests == expected_requests, (fixture, requests, expected_requests)
-            if fixture in ('boot-timeout', 'boot-budget'):
+            if fixture in ('boot-timeout', 'boot-budget', 'boot-nic-timeout'):
                 assert elapsed < 3, (fixture, elapsed)
         assert sentinel.read_bytes() == b'preserve me'
         assert not [entry for entry in root.iterdir() if entry.is_dir() and entry != binary], list(root.iterdir())
