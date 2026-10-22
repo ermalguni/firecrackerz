@@ -1,5 +1,5 @@
 const std = @import("std");
-const fc = @import("firecrackerz");
+const fc = @import("firecrackerz").engine;
 
 /// Configures output on an application-owned disposable Firecracker process.
 pub fn main(init: std.process.Init) !void {

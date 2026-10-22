@@ -1,5 +1,5 @@
 const std = @import("std");
-const fc = @import("firecrackerz");
+const fc = @import("firecrackerz").engine;
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());

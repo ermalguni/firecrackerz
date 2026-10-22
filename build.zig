@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
             "-i",
             "spec/" ++ version ++ "/firecracker.json",
             "-o",
-            "src/versions/" ++ version ++ "/models.zig",
+            "src/engine/versions/" ++ version ++ "/models.zig",
             "--models-only",
         });
         codegen_step.dependOn(&openapi_codegen.step);
@@ -40,14 +40,14 @@ pub fn build(b: *std.Build) void {
     const protocol = b.addExecutable(.{
         .name = "protocol",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/protocol.zig"),
+            .root_source_file = b.path("tests/engine/protocol.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{.{ .name = "firecrackerz", .module = mod }},
         }),
     });
     check.dependOn(&protocol.step);
-    const protocol_run = b.addSystemCommand(&.{ "python3", "tests/protocol.py" });
+    const protocol_run = b.addSystemCommand(&.{ "python3", "tests/engine/protocol.py" });
     protocol_run.addArtifactArg(protocol);
     b.step("protocol", "Exercise connection behavior over a local Unix socket").dependOn(&protocol_run.step);
     b.step("discovery-test", "Exercise discovery and connection failures").dependOn(&protocol_run.step);
@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) void {
     const configure = b.addExecutable(.{
         .name = "configure-test",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/configure.zig"),
+            .root_source_file = b.path("tests/engine/configure.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{.{ .name = "firecrackerz", .module = mod }},
@@ -69,7 +69,7 @@ pub fn build(b: *std.Build) void {
     const boot_source = b.addExecutable(.{
         .name = "boot-source-test",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/boot_source.zig"),
+            .root_source_file = b.path("tests/engine/boot_source.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{.{ .name = "firecrackerz", .module = mod }},
@@ -83,7 +83,7 @@ pub fn build(b: *std.Build) void {
     const drive = b.addExecutable(.{
         .name = "drive-test",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/drive.zig"),
+            .root_source_file = b.path("tests/engine/drive.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{.{ .name = "firecrackerz", .module = mod }},
@@ -99,7 +99,7 @@ pub fn build(b: *std.Build) void {
         const exe = b.addExecutable(.{
             .name = name,
             .root_module = b.createModule(.{
-                .root_source_file = b.path("examples/" ++ name ++ ".zig"),
+                .root_source_file = b.path("examples/engine/" ++ name ++ ".zig"),
                 .target = target,
                 .optimize = optimize,
                 .imports = &.{.{ .name = "firecrackerz", .module = mod }},

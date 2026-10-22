@@ -1,6 +1,6 @@
 # firecrackerz
 
-Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-microvm/firecracker), with one public client and private version adapters.
+Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-microvm/firecracker), exposed through `firecrackerz.engine`, with one public client and private version adapters. A separate managed-VM runtime is planned; it is not implemented or exported yet.
 
 ## Status and scope
 
@@ -18,7 +18,7 @@ Connection, live instance-information reads, machine configuration reads/writes,
 `startBalloonHinting()`, `stopBalloonHinting()`, and `getBalloonHintingStatus()` bind the free-page hinting endpoints.
 `putMemoryHotplug()`, `patchMemoryHotplug()`, and `getMemoryHotplug()` bind `PUT/PATCH/GET /hotplug/memory`.
 
-The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, guest readiness checks, and process cleanup remain application responsibilities.
+The engine client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, guest readiness checks, and process cleanup remain application responsibilities until the separate runtime layer is implemented. See [Architecture](#architecture) for that boundary and the planned runtime layout.
 
 ## Requirements
 
@@ -39,10 +39,12 @@ const firecrackerz = b.dependency("firecrackerz", .{
 exe.root_module.addImport("firecrackerz", firecrackerz.module("firecrackerz"));
 ```
 
+The public namespace is now `firecrackerz.engine`: migrate `fc.Client`, `fc.models`, `fc.Result`, `fc.HttpFault`, `fc.ConnectOptions`, and `fc.Binary` to their `fc.engine` equivalents when `fc` names the package. Legacy top-level aliases have been removed. The examples below instead bind `fc` directly to the engine namespace.
+
 With an allocator and `std.Io` supplied by the application:
 
 ```zig
-const fc = @import("firecrackerz");
+const fc = @import("firecrackerz").engine;
 
 var result = try fc.Client.connect(allocator, io, .{
     .socket_path = "/run/firecracker.sock",
@@ -1355,22 +1357,104 @@ Use a disposable instance for general integration checks. The inspection example
 
 ## Architecture
 
-- `src/root.zig`: public exports only.
-- `src/client.zig`: unified construction, handshake, metadata, and ownership.
-- `src/models.zig`: stable public metadata, borrowed configuration requests, and owned instance/configuration responses.
-- `src/result.zig`: owned results and HTTP faults.
-- `src/internal/discovery.zig`: executable resolution and bounded probing.
-- `src/internal/version.zig`: parsing and explicit support registry.
-- `src/internal/transport.zig`: shared Unix-socket HTTP transport.
-- `src/internal/operations.zig`: shared endpoint operations.
-- `src/internal/backend.zig`: private contract selection and dispatch.
-- `src/versions/v1_17/adapter.zig`: wire-request encoding and response decoding.
+The repository separates **engine API bindings** from **future runtime orchestration**. Engine never depends on runtime; runtime will use the engine's public client and models, not its internal transport or generated wire types.
 
-See [AGENTS.md](AGENTS.md) for the intended full-client layout. Feature capability queries remain unimplemented; there are no placeholder endpoint methods.
+### Implemented engine layout
+
+```text
+src/
+├── root.zig                         # Exports engine
+└── engine/
+    ├── root.zig                     # Public Client, models, results, options
+    ├── client.zig                   # Connection ownership + thin methods
+    ├── models.zig                   # Stable public model export index
+    ├── result.zig                   # Owned results and HTTP faults
+    ├── <feature>/
+    │   ├── models.zig               # Handwritten request/response models
+    │   └── operations.zig           # Resource-specific HTTP operations
+    ├── shared/
+    │   ├── connection.zig
+    │   └── rate_limiter.zig
+    ├── internal/
+    │   ├── discovery.zig
+    │   ├── version.zig              # Explicit supported-release registry
+    │   ├── backend.zig              # Private contract dispatch
+    │   ├── transport.zig
+    │   └── response.zig             # Common response handling
+    └── versions/
+        ├── v1_17/
+        │   ├── models.zig           # Generated wire models
+        │   └── adapter/             # Handwritten conversions by feature
+        └── v1_18/
+            └── models.zig           # Generated only, not runtime support
+
+tests/engine/                        # Protocol and live scenario runners
+examples/engine/                     # Engine-only usage examples
+```
+
+Features are `instance`, `machine`, `cpu`, `boot_source`, `drive`,
+`network_interface`, `balloon`, `memory_hotplug`, `mmds`, `snapshot`,
+`observability`, `devices`, and `vm_configuration`. For example, balloon
+models and HTTP operations live in `engine/balloon/`; its v1.17 conversions
+live in `engine/versions/v1_17/adapter/balloon.zig`.
+
+`engine.models` remains the public model surface. Feature model files use
+direct dependencies internally; shared types are not duplicated. Generated
+wire models remain private and are not hand-edited. Existing build command
+names are unchanged; their source paths now point into `tests/engine/` and
+`examples/engine/`.
+
+### Planned runtime layout and ownership
+
+These paths describe future implementation locations, not currently available
+APIs. There is no empty `runtime` export or placeholder VM implementation.
+When real runtime behavior is added, `src/root.zig` will also export
+`@import("runtime/root.zig")` as `runtime`.
+
+```text
+src/runtime/
+├── root.zig                         # Public runtime exports
+├── vm.zig                           # Owned single-VM handle
+├── spec.zig                         # Operational intent + engine models
+├── state.zig                        # Managed lifecycle state
+├── process/                         # Firecracker/jailer launch, supervision
+├── artifacts/                       # Kernels, rootfs, snapshots, workspace
+├── networking/                      # TAP, bridge, routing, NAT, guest config
+├── readiness/                       # API, guest, application probes
+├── telemetry/                       # Read, rotate, ship logs and metrics
+├── execution/                       # Configure/start/stop/snapshot workflows,
+│                                    # ownership, cleanup, reports
+└── manager/                         # VM registry and shared host resources
+
+tests/runtime/
+examples/runtime/
+```
+
+- A managed VM generally owns its own process and engine client; a manager
+  coordinates multiple VM handles rather than sharing one API socket.
+- Runtime workflows may borrow that client. Direct engine access must be
+  exclusive with runtime operations because clients support sequential use
+  only. Direct lifecycle changes also invalidate cached runtime assumptions.
+- Engine configures Firecracker NICs and log/metrics destinations; runtime
+  prepares host networking and consumes output. Guest IP configuration and
+  application readiness are separate from host setup and VM running state.
+- Snapshot API calls stay in engine; artifact preparation belongs in
+  `artifacts/`, while pause/create/restore/resume coordination belongs in
+  `execution/`.
+- Execution records resources actually acquired for partial-failure cleanup.
+  Borrowed resources must not be deleted, and shared bridges or NAT rules
+  must not be removed while another VM uses them. Shutdown is explicit and
+  fallible, separate from memory release.
+- Multi-VM management does not imply a persistent daemon or multi-host
+  scheduler. Restart recovery requires its own ownership and reconciliation
+  requirements.
+
+See [AGENTS.md](AGENTS.md) for contributor boundaries. Feature capability
+queries remain unimplemented; there are no placeholder endpoint methods.
 
 ### Model generation and additional versions
 
-`zig build codegen` invokes `openapi2zig generate --models-only` for each configured version, reading `spec/<version>/firecracker.json` and overwriting `src/versions/<version>/models.zig`. Do not hand-edit generated models. Keep stable public types and handwritten adapters separate.
+`zig build codegen` invokes `openapi2zig generate --models-only` for each configured version, reading `spec/<version>/firecracker.json` and overwriting `src/engine/versions/<version>/models.zig`. Do not hand-edit generated models. Keep stable public types and handwritten adapters separate.
 
 Adding runtime support requires pinned schema provenance, contract comparison, explicit registration, an adapter where behavior differs, and verification against that release. Directory names and successful generation do not establish support. Future operations must reject unsupported fields rather than silently discarding them.
 
