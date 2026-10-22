@@ -4,7 +4,7 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 ## Status and scope
 
-Connection, live instance-information reads, machine configuration reads/writes, boot-source configuration, drive and network-interface configuration, and instance start are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getInstanceInfo()`, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `putGuestNetworkInterface()`, `startInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
+Connection, live instance-information reads, machine configuration reads/writes, boot-source configuration, drive and network-interface configuration, logger and metrics configuration, metrics flushing, and instance start are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getInstanceInfo()`, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `putGuestNetworkInterface()`, `putLogger()`, `putMetrics()`, `flushMetrics()`, `startInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
 
 Other device configuration, other action methods, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
@@ -227,6 +227,75 @@ zig build configure_and_start -- SOCKET EXECUTABLE KERNEL ROOTFS tap0 --disposab
 
 The optional TAP argument configures interface ID `eth0` before starting the guest. Omitting it preserves disk-only boot. The guest still needs its own network configuration.
 
+### Configuring logs and metrics
+
+Configure destinations before starting the guest:
+
+```zig
+var logger = try client.putLogger(.{
+    .log_path = "/logs/firecracker.log",
+    .level = "Debug",
+    .show_level = true,
+    .show_log_origin = true,
+});
+defer logger.deinit();
+switch (logger) {
+    .success => {},
+    .fault => |fault| {
+        std.log.err("Logger HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.LoggerRejected;
+    },
+}
+
+var properties: std.json.ArrayHashMap([]const u8) = .{};
+defer properties.deinit(allocator);
+try properties.map.put(allocator, "service", "worker");
+var metrics = try client.putMetrics(.{
+    .metrics_path = "/logs/metrics.jsonl",
+    .emit_id = true,
+    .properties = properties,
+});
+defer metrics.deinit();
+switch (metrics) {
+    .success => {},
+    .fault => |fault| {
+        std.log.err("Metrics HTTP {d}: {s}", .{ fault.status, fault.body });
+        return error.MetricsRejected;
+    },
+}
+```
+
+`LoggerRequest` has optional `log_path`, `level`, `show_level`, `show_log_origin`, and `module` fields. Levels are `Error`, `Warning`, `Info`, `Debug`, `Trace`, and `Off` (case-insensitive); `module` filters by module path. Null fields are omitted so Firecracker applies its behavior/defaults. Explicit false and empty strings are sent unchanged; Firecracker validates values.
+
+`MetricsRequest` requires `metrics_path`; `emit_id` and `properties` are optional. Properties are a string-to-string JSON map, not arbitrary JSON. The caller owns the map and its strings; the client borrows them only during the call. Null omits properties, while an empty map sends `{}`. Firecracker rejects repeated metrics initialization.
+
+Both methods return `Result(void)`: HTTP 204 succeeds, other statuses preserve owned raw faults, and transport/allocation failures remain Zig errors. Paths refer to files or named pipes in **Firecracker's filesystem namespace**. Prepare destinations and permissions there; for FIFOs, arrange a reader before configuration to avoid blocking the server. The client does not create, read, rotate, or ship output files.
+
+After starting the VM, request an immediate flush:
+
+```zig
+var flushed = try client.flushMetrics();
+defer flushed.deinit();
+switch (flushed) {
+    .success => {},
+    .fault => |fault| std.log.err("Metrics flush HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+`flushMetrics()` sends `PUT /actions` with `{"action_type":"FlushMetrics"}`. Firecracker v1.17.0 rejects this action before VM start. Success acknowledges the flush operation; metrics are written to the configured destination, not returned in the HTTP response. Existing request deadlines, response limits, and no-retry behavior apply to all three methods. A timeout does not establish whether configuration or flushing completed.
+
+The `observability` example has separate configuration and post-start flush commands:
+
+```sh
+zig build observability -- SOCKET EXECUTABLE LOG_PATH METRICS_PATH --disposable
+# Configure and start the guest, then:
+zig build observability -- SOCKET EXECUTABLE --flush --disposable
+```
+
+It enables debug logging with level/origin fields and metrics with the instance ID and `{"source":"firecrackerz"}` properties. Both commands mutate the server and require `--disposable`. They do not start or stop Firecracker.
+
 ### Starting the instance
 
 After configuring the machine, boot source, and any required devices:
@@ -282,13 +351,15 @@ The HTTP request defaults to a 3000 ms timeout and a 64 KiB response-body limit.
 | `zig build test` | Run version and discovery unit tests |
 | `zig build protocol` | Run local Unix-socket connection, live instance-information, configuration, instance-start, and subprocess discovery scenarios |
 | `zig build discovery-test` | Run the same combined protocol scenarios |
-| `zig build examples` | Build and install the inspection and configure-and-start examples |
+| `zig build examples` | Build and install inspection, configure-and-start, and observability examples |
 | `zig build inspect -- SOCKET EXECUTABLE` | Print verified metadata, live instance information, and current machine configuration |
 | `zig build integration -- SOCKET EXECUTABLE` | Run the inspection example against a disposable real instance |
 | `zig build configure-test -- SOCKET EXECUTABLE --disposable` | Mutate a disposable pre-boot instance; verify readback, optional-field reset, and invalid-update rejection |
 | `zig build boot-source-test -- SOCKET EXECUTABLE KERNEL INITRD --disposable` | Configure a disposable pre-boot instance; exercise optional arguments, replacement, and invalid paths without starting a guest |
 | `zig build drive-test -- SOCKET EXECUTABLE IMAGE --disposable` | Configure a disposable root drive; exercise replacement, invalid paths, and invalid configuration without starting a guest |
 | `zig build configure_and_start -- SOCKET EXECUTABLE KERNEL ROOTFS [TAP] --disposable` | Configure 1 vCPU, 128 MiB, kernel, read-only root drive, and optional existing TAP, then start a disposable guest |
+| `zig build observability -- SOCKET EXECUTABLE LOG_PATH METRICS_PATH --disposable` | Configure logging and metrics on a disposable instance |
+| `zig build observability -- SOCKET EXECUTABLE --flush --disposable` | Flush metrics after starting the disposable VM |
 | `zig build codegen` | Regenerate version-specific wire models |
 
 Protocol scenarios cover explicit and PATH discovery, supported versions, content-length and chunked responses, version mismatch, preserved HTTP faults, malformed JSON, socket absence, oversized responses, request and discovery timeouts, malformed executable output, process failure, and unsupported releases.
@@ -310,6 +381,10 @@ Network-interface protocol scenarios cover omitted fields, independent RX/TX lim
 End-to-end network verification used the `configure_and_start` example with its TAP argument, Firecracker v1.17.0, the same CI kernel recorded below, and a disposable ext4 image containing a static init program. In an isolated user/network namespace, the guest configured `172.16.0.2/30` and successfully sent a TCP payload to the host-side TAP address `172.16.0.1`. This verifies guest-to-host connectivity, not Internet routing/NAT, DHCP, or rate-limit throughput.
 
 Instance-start protocol scenarios cover the action payload, empty 204 success, owned faults surviving client destruction, unexpected 200 responses, timeouts, disconnects, oversized faults, and absence of automatic retries. Live verification used Firecracker v1.17.0, the upstream CI x86_64 kernel `firecracker-ci/20261021-1e5fcc27b59f-0/x86_64/vmlinux-6.1.188`, and a temporary ext4 root filesystem with a static minimal init program. The configure-and-start example succeeded, `GET /` reported `Running`, and serial output confirmed the init program ran. Direct API probes rejected unconfigured and repeated starts with HTTP 400. This is a minimal boot smoke check, not verification of a production guest or application.
+
+Observability protocol scenarios cover omitted versus explicit false/empty fields, escaped paths and property keys/values, string-valued properties as JSON objects, empty property maps, owned faults surviving client destruction, unexpected statuses, timeouts, disconnects, oversized faults, and no automatic retries for logger/metrics configuration or flushing.
+
+Live observability verification on Firecracker v1.17.0 used the `observability` example to configure real log and metrics files, then the configure-and-start example to start a disposable VM with the CI kernel and minimal ext4 image described above. The post-start `--flush` command succeeded; logs contained the `FlushMetrics` action and successful response with debug level/origin metadata. Metrics lines parsed as JSON and contained the configured instance ID, `{"source":"firecrackerz"}` properties, and API-server/logger counters. Repeated metrics initialization returned HTTP 400. A pre-start flush also returned HTTP 400, preserving Firecracker's lifecycle rejection. FIFO operation, rotation, and downstream shipping were not exercised.
 
 Use a disposable instance for general integration checks. The inspection example sends only `GET /version`, `GET /`, and `GET /machine-config`; it does not configure or boot a guest.
 

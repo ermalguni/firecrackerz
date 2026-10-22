@@ -62,6 +62,22 @@ pub fn putGuestNetworkInterface(allocator: std.mem.Allocator, transport: *Transp
     return putEmpty(allocator, transport, path, body);
 }
 
+pub fn putLogger(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.LoggerRequest) !results.Result(void) {
+    const body = try backend.encodeLogger(allocator, request);
+    defer allocator.free(body);
+    return putEmpty(allocator, transport, "/logger", body);
+}
+
+pub fn putMetrics(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.MetricsRequest) !results.Result(void) {
+    const body = try backend.encodeMetrics(allocator, request);
+    defer allocator.free(body);
+    return putEmpty(allocator, transport, "/metrics", body);
+}
+
+pub fn flushMetrics(allocator: std.mem.Allocator, transport: *Transport) !results.Result(void) {
+    return putEmpty(allocator, transport, "/actions", "{\"action_type\":\"FlushMetrics\"}");
+}
+
 pub fn startInstance(allocator: std.mem.Allocator, transport: *Transport) !results.Result(void) {
     // Identical for supported contracts. A fixed action needs no request allocation.
     return putEmpty(allocator, transport, "/actions", "{\"action_type\":\"InstanceStart\"}");

@@ -58,4 +58,16 @@ pub const Backend = union(enum) {
             .v1_17 => v1_17.encodeNetworkInterface(allocator, request),
         };
     }
+
+    pub fn encodeLogger(self: Backend, allocator: std.mem.Allocator, request: models.LoggerRequest) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeLogger(allocator, request),
+        };
+    }
+
+    pub fn encodeMetrics(self: Backend, allocator: std.mem.Allocator, request: models.MetricsRequest) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeMetrics(allocator, request),
+        };
+    }
 };

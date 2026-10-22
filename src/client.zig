@@ -98,6 +98,24 @@ pub const Client = struct {
         return operations.putGuestNetworkInterface(self.allocator, &self.transport, self.backend, request);
     }
 
+    /// Configures Firecracker logging; does not create or read the destination.
+    /// Request data is borrowed during the call. No automatic retries.
+    pub fn putLogger(self: *Client, request: models.LoggerRequest) !results.Result(void) {
+        return operations.putLogger(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Initializes metrics output in Firecracker's filesystem namespace.
+    /// Firecracker rejects repeated initialization. No automatic retries.
+    pub fn putMetrics(self: *Client, request: models.MetricsRequest) !results.Result(void) {
+        return operations.putMetrics(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Requests an immediate post-start metrics flush, not a metrics read.
+    /// Never retried: a timeout may follow a completed flush.
+    pub fn flushMetrics(self: *Client) !results.Result(void) {
+        return operations.flushMetrics(self.allocator, &self.transport);
+    }
+
     /// Starts the configured microVM once. Success is not guest readiness.
     /// Never retried: a timeout/disconnect can leave the VM running.
     /// Firecracker validates configuration and lifecycle; no local state is cached.

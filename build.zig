@@ -95,7 +95,7 @@ pub fn build(b: *std.Build) void {
     b.step("drive-test", "Configure a disposable root drive (-- SOCKET EXECUTABLE IMAGE --disposable)").dependOn(&drive_run.step);
 
     const examples = b.step("examples", "Build library usage examples");
-    inline for (.{ "inspect", "configure_and_start" }) |name| {
+    inline for (.{ "inspect", "configure_and_start", "observability" }) |name| {
         const exe = b.addExecutable(.{
             .name = name,
             .root_module = b.createModule(.{
