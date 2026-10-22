@@ -221,6 +221,14 @@ pub const NetworkInterfaceRequest = struct {
     tx_rate_limiter: ?RateLimiter = null,
 };
 
+/// Updates rate limiters on an existing interface, including after boot.
+/// The ID is borrowed. Null fields are omitted, leaving those limits unchanged.
+pub const NetworkInterfaceUpdate = struct {
+    iface_id: []const u8,
+    rx_rate_limiter: ?RateLimiter = null,
+    tx_rate_limiter: ?RateLimiter = null,
+};
+
 /// Logger configuration. Strings are borrowed for the call. The destination
 /// belongs to Firecracker's filesystem namespace; the client never opens it.
 /// Null fields are omitted; Firecracker applies defaults and validates values.

@@ -122,6 +122,12 @@ pub const Client = struct {
         return operations.putGuestNetworkInterface(self.allocator, &self.transport, self.backend, request);
     }
 
+    /// Updates an existing interface's RX/TX rate limiters, not host networking.
+    /// The borrowed ID selects path and body. No automatic retries.
+    pub fn patchGuestNetworkInterface(self: *Client, request: models.NetworkInterfaceUpdate) !results.Result(void) {
+        return operations.patchGuestNetworkInterface(self.allocator, &self.transport, self.backend, request);
+    }
+
     /// Configures Firecracker logging; does not create or read the destination.
     /// Request data is borrowed during the call. No automatic retries.
     pub fn putLogger(self: *Client, request: models.LoggerRequest) !results.Result(void) {

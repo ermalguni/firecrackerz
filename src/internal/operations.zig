@@ -110,6 +110,24 @@ pub fn putGuestNetworkInterface(allocator: std.mem.Allocator, transport: *Transp
     return putEmpty(allocator, transport, path, body);
 }
 
+pub fn patchGuestNetworkInterface(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.NetworkInterfaceUpdate) !results.Result(void) {
+    const body = try backend.encodeNetworkInterfaceUpdate(allocator, request);
+    defer allocator.free(body);
+    var buffer: [512]u8 = undefined;
+    const args = .{std.fmt.alt(@as(std.Uri.Component, .{ .raw = request.iface_id }), .formatEscaped)};
+    const path = std.mem.print(&buffer, "/network-interfaces/{f}", args) catch
+        try std.fmt.allocPrint(allocator, "/network-interfaces/{f}", args);
+    defer if (path.ptr != &buffer) allocator.free(path);
+    var response = try transport.patch(path, body);
+    defer response.deinit();
+    if (response.status != 204) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = {} };
+}
+
 pub fn putLogger(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.LoggerRequest) !results.Result(void) {
     const body = try backend.encodeLogger(allocator, request);
     defer allocator.free(body);

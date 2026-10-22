@@ -424,6 +424,55 @@ zig build configure_and_start -- SOCKET EXECUTABLE KERNEL ROOTFS tap0 --disposab
 
 The optional TAP argument configures interface ID `eth0` before starting the guest. Omitting it preserves disk-only boot. The guest still needs its own network configuration.
 
+### Updating network rate limiters
+
+`patchGuestNetworkInterface(models.NetworkInterfaceUpdate)` sends
+`PATCH /network-interfaces/{iface_id}` to update an existing interface's RX
+and/or TX rate limiters after boot. It does not attach interfaces or change
+the TAP, MAC, MTU, or host networking.
+
+```zig
+var update = try client.patchGuestNetworkInterface(.{
+    .iface_id = "eth0",
+    .rx_rate_limiter = .{
+        .bandwidth = .{ .size = 1048576, .refill_time = 1000 },
+        .ops = .{ .size = 2000, .refill_time = 1000 },
+    },
+});
+defer update.deinit();
+switch (update) {
+    .success => {},
+    .fault => |fault| std.log.err("Network update rejected: HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+Only `iface_id` is required. RX and TX limiters are independently optional:
+the example leaves TX unchanged. Null fields are omitted recursively, while
+explicit zero values and empty limiter objects are preserved. To disable TX
+limiting, provide both zero-sized buckets:
+
+```zig
+const disable_tx: fc.models.NetworkInterfaceUpdate = .{
+    .iface_id = "eth0",
+    .tx_rate_limiter = .{
+        .bandwidth = .{ .size = 0, .refill_time = 0 },
+        .ops = .{ .size = 0, .refill_time = 0 },
+    },
+};
+// Pass disable_tx to client.patchGuestNetworkInterface and handle its Result.
+```
+
+The borrowed interface ID supplies both the JSON body and a percent-escaped
+URL segment. Firecracker validates IDs, limiter values, and device/lifecycle
+restrictions. HTTP 204 returns success; other statuses preserve owned raw
+faults. Transport/allocation errors remain Zig errors. Existing timeouts,
+response-size limits, and no-retry behavior apply; a timeout does not prove
+the update failed.
+
+See the pinned [network update semantics](https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/api_requests/patch-network-interface.md).
+
 ### Configuring logs and metrics
 
 Configure destinations before starting the guest:

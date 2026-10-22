@@ -160,6 +160,15 @@ pub fn encodeNetworkInterface(allocator: std.mem.Allocator, request: models.Netw
     return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
 }
 
+pub fn encodeNetworkInterfaceUpdate(allocator: std.mem.Allocator, request: models.NetworkInterfaceUpdate) ![]u8 {
+    const value: wire.PartialNetworkInterface = .{
+        .iface_id = request.iface_id,
+        .rx_rate_limiter = encodeRateLimiter(request.rx_rate_limiter),
+        .tx_rate_limiter = encodeRateLimiter(request.tx_rate_limiter),
+    };
+    return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
+}
+
 pub fn encodeLogger(allocator: std.mem.Allocator, request: models.LoggerRequest) ![]u8 {
     const value: wire.Logger = .{
         .log_path = request.log_path,
