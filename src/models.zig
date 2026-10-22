@@ -116,6 +116,10 @@ pub const MemoryHotplugConfiguration = struct {
     block_size_mib: ?i64 = null,
 };
 
+/// Custom CPU template, also returned within full VM configuration.
+/// For PUT, strings and nested slices are borrowed for the call; null fields
+/// are omitted and explicit empty arrays are preserved. Firecracker validates
+/// architecture-specific fields and bitmaps; acceptance is not proof of boot.
 pub const CpuConfiguration = struct {
     cpuid_modifiers: ?[]const CpuidLeafModifier = null,
     kvm_capabilities: ?[]const []const u8 = null,

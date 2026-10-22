@@ -10,6 +10,7 @@ Connection, live instance-information reads, machine configuration reads/writes,
 
 `getVmConfiguration()` exports the full VM resource configuration via `GET /vm/config`.
 `patchMachineConfiguration()` partially updates pre-boot machine settings via `PATCH /machine-config`.
+`putCpuConfiguration()` configures custom pre-boot CPU features via `PUT /cpu-config`.
 
 The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, guest readiness checks, and process cleanup remain application responsibilities.
 
@@ -225,6 +226,69 @@ other fields, and an invalid multi-field PATCH leaves prior configuration intact
 Protocol scenarios also cover empty updates, explicit values and string escaping,
 owned HTTP faults, unexpected statuses, timeouts, disconnects, oversized responses,
 and absence of automatic retries.
+
+### Configuring custom CPU features
+
+On a connected, **pre-boot x86_64** instance:
+
+```zig
+var cpu = try client.putCpuConfiguration(.{
+    .cpuid_modifiers = &.{.{
+        .leaf = "0x1",
+        .subleaf = "0x0",
+        .flags = 0,
+        .modifiers = &.{.{
+            .register = "ecx",
+            // Clear SSE3; preserve the other bits. Choose a template for your guest.
+            .bitmap = "0bxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx0",
+        }},
+    }},
+});
+defer cpu.deinit();
+
+switch (cpu) {
+    .success => {},
+    .fault => |fault| std.log.err("CPU template rejected: HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+The request uses the existing `models.CpuConfiguration`:
+
+| Field | Architecture | Entry type |
+| --- | --- | --- |
+| `cpuid_modifiers` | x86_64 | `CpuidLeafModifier` with nested `CpuidRegisterModifier` |
+| `msr_modifiers` | x86_64 | `CpuRegisterModifier` |
+| `reg_modifiers` | aarch64 | `CpuRegisterModifier` |
+| `vcpu_features` | aarch64 | `VcpuFeatures` |
+| `kvm_capabilities` | Both | Numeric strings; prefix `!` to remove a capability |
+
+All fields are optional. Null fields are omitted; explicit empty arrays and
+all supplied nested fields are preserved. Strings and slices are borrowed only
+for the call. Bitmap characters `0`, `1`, and `x` clear, set, and preserve bits;
+their permitted widths and register formats depend on the modifier type.
+Firecracker validates architecture-specific fields, formats, and lifecycle
+restrictions. The client does not silently drop fields or validate against its
+own host CPU.
+
+This sets a custom template, distinct from the static `cpu_template` setting in
+machine configuration. PUT replaces the custom template rather than merging
+individual modifiers. HTTP 204 returns `Result(void).success`; other statuses
+return owned faults. Always call `deinit()`. Transport/allocation failures remain
+Zig errors, and requests are never automatically retried.
+
+Acceptance does not establish that the host can apply every requested feature
+at boot, or that the guest can run with it. Firecracker v1.17.0 explicitly exports
+`cpu-config: null` in [`VmmConfig::from`](https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/src/vmm/src/resources.rs),
+so `getVmConfiguration()` cannot confirm the installed custom template.
+
+Protocol coverage includes x86_64 and aarch64 nested shapes, omitted versus empty
+arrays, string escaping, HTTP faults, unexpected statuses, timeouts, disconnects,
+oversized responses, and no retries. Live `configure-test` verification on
+Firecracker v1.17.0 x86_64 confirmed HTTP 204 for a CPUID/KVM-capability template
+and an empty replacement, and HTTP 400 for malformed capability input.
+Guest feature application and aarch64 runtime behavior were not exercised.
 
 ### Configuring the boot source
 

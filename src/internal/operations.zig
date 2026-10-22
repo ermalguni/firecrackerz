@@ -56,6 +56,12 @@ pub fn patchMachineConfiguration(allocator: std.mem.Allocator, transport: *Trans
     return .{ .success = {} };
 }
 
+pub fn putCpuConfiguration(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.CpuConfiguration) !results.Result(void) {
+    const body = try backend.encodeCpuConfiguration(allocator, request);
+    defer allocator.free(body);
+    return putEmpty(allocator, transport, "/cpu-config", body);
+}
+
 pub fn putGuestBootSource(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.BootSourceRequest) !results.Result(void) {
     const body = try backend.encodeBootSource(allocator, request);
     defer allocator.free(body);

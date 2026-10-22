@@ -91,6 +91,12 @@ pub const Client = struct {
         return operations.patchMachineConfiguration(self.allocator, &self.transport, self.backend, request);
     }
 
+    /// Sets a custom pre-boot CPU template. Strings and nested slices are borrowed.
+    /// Firecracker validates architecture-specific input. No automatic retries.
+    pub fn putCpuConfiguration(self: *Client, request: models.CpuConfiguration) !results.Result(void) {
+        return operations.putCpuConfiguration(self.allocator, &self.transport, self.backend, request);
+    }
+
     /// Creates or replaces the pre-boot source. Paths belong to the server's
     /// filesystem namespace. Request strings are borrowed; no automatic retries.
     pub fn putGuestBootSource(self: *Client, request: models.BootSourceRequest) !results.Result(void) {
