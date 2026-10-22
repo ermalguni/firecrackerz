@@ -6,7 +6,7 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 Connection, live instance-information reads, machine configuration reads/writes, boot-source configuration, drive and network-interface configuration, logger and metrics configuration, metrics flushing, and instance start/pause/resume are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getInstanceInfo()`, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `putGuestNetworkInterface()`, `putLogger()`, `putMetrics()`, `flushMetrics()`, `startInstance()`, `pauseInstance()`, `resumeInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
 
-`sendCtrlAltDel()` is also implemented. Other device configuration, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
+`sendCtrlAltDel()`, `createSnapshot()`, and `loadSnapshot()` are also implemented. Other device configuration, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
 The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, guest readiness checks, and process cleanup remain application responsibilities.
 
@@ -387,12 +387,79 @@ Snapshot creation uses `request_timeout_ms` from connection options; choose a
 timeout appropriate for guest memory size and storage speed. There are no retries:
 a timeout or disconnect may leave completed or partially written files. Live VM
 state alone cannot establish snapshot completion. Resume explicitly when appropriate.
-Snapshot restoration and management of differential memory files remain outside
-this endpoint binding.
+Management of differential memory files remains an application responsibility.
 
 Local Unix-socket protocol scenarios exercise full and differential requests,
 omitted options, escaped paths, explicit sync true/false, HTTP faults, unexpected
 statuses, timeouts, disconnects, and absence of automatic retries.
+
+### Restoring snapshots
+
+`loadSnapshot(models.SnapshotLoadRequest)` sends `PUT /snapshot/load`. Connect to
+a **fresh Firecracker process**, before configuring any resource other than
+logger and metrics. Do not configure a boot source, drives, or machine settings
+first: the snapshot supplies the VM configuration.
+
+```zig
+var restored = try client.loadSnapshot(.{
+    .snapshot_path = "/snapshots/guest.state",
+    .mem_backend = .{
+        .backend_type = "File",
+        .backend_path = "/snapshots/guest.mem",
+    },
+    .track_dirty_pages = true,
+    .resume_vm = false,
+});
+defer restored.deinit();
+switch (restored) {
+    .success => {},
+    .fault => |fault| {
+        std.log.err("Restore rejected: HTTP {d}: {s}", .{ fault.status, fault.body });
+        return;
+    },
+}
+// The restored VM is paused. Call resumeInstance() when ready.
+```
+
+Set `resume_vm = true` to resume as part of loading; omitted or false leaves the
+VM paused. Success does not establish guest/application readiness.
+
+All request strings and slices are borrowed during the call. Paths belong to
+Firecracker's filesystem namespace, not the client's. Supply exactly one memory
+source: `mem_backend` (recommended) or the upstream-deprecated `mem_file_path`.
+The backend type is `"File"` for a memory image or `"Uffd"` for a Unix socket
+served by an external userfaultfd page-fault handler. The client starts neither
+the handler nor Firecracker.
+
+Optional fields are omitted when null; explicit false and empty override lists
+are preserved:
+
+| Field | Purpose |
+| --- | --- |
+| `track_dirty_pages` | Enable dirty-page tracking for subsequent differential snapshots |
+| `enable_diff_snapshots` | Upstream-deprecated dirty-tracking option; prefer `track_dirty_pages` |
+| `network_overrides` | Slice of `{ .iface_id, .host_dev_name }` entries selecting existing host TAPs |
+| `vsock_override` | `{ .uds_path }` to replace the backing vsock socket path |
+| `clock_realtime` | x86_64 wall-clock advancement during restore |
+| `huge_pages` | `"Snapshot"` (server default), `"None"`, `"Transparent"`, or `"2M"`; explicit 2M pages require UFFD |
+
+Firecracker validates memory-source combinations, snapshot compatibility,
+architecture-specific options, and lifecycle state. Only HTTP 204 succeeds;
+other statuses return an owned fault body, while transport/allocation failures
+remain Zig errors. Requests use the connection's `request_timeout_ms` and are
+never retried. A timeout or disconnect can follow a completed restore, including
+a running guest when `resume_vm` is true; do not blindly retry.
+
+For differential snapshots, prepare the complete memory image by applying the
+required differential layers to their base before a file-backed restore. This
+binding does not merge layers, prepare backing disks, or create TAP devices.
+Restore requires compatible snapshot state and its associated memory/resources.
+
+Local Unix-socket scenarios cover file and UFFD requests, legacy memory paths,
+device overrides, omitted and explicit false options, empty lists, preserved
+server faults for invalid memory-source combinations, unexpected statuses,
+timeouts, disconnects, response limits, and absence of retries. These are protocol
+checks, not a real guest restore or UFFD-handler integration test.
 
 ### Sending Ctrl+Alt+Delete
 

@@ -149,6 +149,13 @@ pub const Client = struct {
         return operations.createSnapshot(self.allocator, &self.transport, self.backend, request);
     }
 
+    /// Restores into a fresh Firecracker process; optionally resumes via resume_vm.
+    /// Does not prepare memory images, TAPs, or a UFFD server. Never retried:
+    /// a timeout/disconnect may follow a successful restore or a running guest.
+    pub fn loadSnapshot(self: *Client, request: models.SnapshotLoadRequest) !results.Result(void) {
+        return operations.loadSnapshot(self.allocator, &self.transport, self.backend, request);
+    }
+
     pub fn deinit(self: *Client) void {
         self.transport.deinit();
         self.discovered.deinit(self.allocator);

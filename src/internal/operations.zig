@@ -101,6 +101,12 @@ pub fn createSnapshot(allocator: std.mem.Allocator, transport: *Transport, backe
     return putEmpty(allocator, transport, "/snapshot/create", body);
 }
 
+pub fn loadSnapshot(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.SnapshotLoadRequest) !results.Result(void) {
+    const body = try backend.encodeSnapshotLoad(allocator, request);
+    defer allocator.free(body);
+    return putEmpty(allocator, transport, "/snapshot/load", body);
+}
+
 fn patchVm(allocator: std.mem.Allocator, transport: *Transport, body: []const u8) !results.Result(void) {
     var response = try transport.patch("/vm", body);
     defer response.deinit();
