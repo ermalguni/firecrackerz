@@ -9,6 +9,7 @@ Connection, live instance-information reads, machine configuration reads/writes,
 `sendCtrlAltDel()`, `createSnapshot()`, and `loadSnapshot()` are also implemented. Other device configuration, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
 `getVmConfiguration()` exports the full VM resource configuration via `GET /vm/config`.
+`patchMachineConfiguration()` partially updates pre-boot machine settings via `PATCH /machine-config`.
 
 The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, guest readiness checks, and process cleanup remain application responsibilities.
 
@@ -183,6 +184,47 @@ switch (updated) {
 This is `PUT /machine-config`, **not PATCH**. Omitted optional settings reset to Firecracker defaults (`smt=false`, `track_dirty_pages=false`, no CPU template, `huge_pages=None`); they do not preserve the previous configuration. Firecracker validates values and lifecycle restrictions. Invalid configurations are returned as HTTP faults, not silently corrected locally.
 
 The return type is `Result(void)`: HTTP 204 succeeds without JSON decoding; every other status is preserved as an owned fault. Call `updated.deinit()` even for a void success. Transport/allocation errors remain Zig errors. Requests use the existing timeout and response-size limit and are never automatically retried. A timeout or disconnect after sending a write does not prove the server rejected it; read back state before deciding whether to retry.
+
+### Partially updating machine configuration
+
+On a connected, **pre-boot** instance:
+
+```zig
+var patched = try client.patchMachineConfiguration(.{
+    .mem_size_mib = 512,
+    .track_dirty_pages = false,
+});
+defer patched.deinit();
+
+switch (patched) {
+    .success => {},
+    .fault => |fault| std.log.err("Partial update rejected: HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+`models.MachineConfigurationUpdate` makes all six fields optional:
+`vcpu_count`, `mem_size_mib`, `smt`, `track_dirty_pages`, `cpu_template`, and
+`huge_pages`. Null fields are omitted from JSON and preserve the current setting,
+unlike PUT's replacement semantics. Explicit false, zero, and empty strings are
+sent unchanged for Firecracker to validate. Strings are borrowed during the call.
+An empty update is sent as `{}`; the client does not impose additional validation.
+
+Firecracker enforces pre-boot restrictions and rejects the entire update if a
+supplied value is invalid. `Result(void)` succeeds only for HTTP 204; all other
+statuses return owned faults. Call `patched.deinit()` on either outcome.
+Transport/allocation failures remain Zig errors. There are no automatic retries:
+after a timeout or disconnect, read back configuration before retrying.
+
+`zig build configure-test -- SOCKET EXECUTABLE --disposable` exercises both PUT
+and PATCH against a caller-supplied disposable instance. Live verification on
+Firecracker v1.17.0 confirmed that a memory-only PATCH preserves CPU count and
+optional settings, explicit false disables dirty-page tracking without resetting
+other fields, and an invalid multi-field PATCH leaves prior configuration intact.
+Protocol scenarios also cover empty updates, explicit values and string escaping,
+owned HTTP faults, unexpected statuses, timeouts, disconnects, oversized responses,
+and absence of automatic retries.
 
 ### Configuring the boot source
 

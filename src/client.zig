@@ -85,6 +85,12 @@ pub const Client = struct {
         return operations.putMachineConfiguration(self.allocator, &self.transport, self.backend, request);
     }
 
+    /// Pre-boot partial update: omitted fields preserve their current values.
+    /// Firecracker validates values and lifecycle. Borrowed data; no retries.
+    pub fn patchMachineConfiguration(self: *Client, request: models.MachineConfigurationUpdate) !results.Result(void) {
+        return operations.patchMachineConfiguration(self.allocator, &self.transport, self.backend, request);
+    }
+
     /// Creates or replaces the pre-boot source. Paths belong to the server's
     /// filesystem namespace. Request strings are borrowed; no automatic retries.
     pub fn putGuestBootSource(self: *Client, request: models.BootSourceRequest) !results.Result(void) {

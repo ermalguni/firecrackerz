@@ -43,6 +43,19 @@ pub fn putMachineConfiguration(allocator: std.mem.Allocator, transport: *Transpo
     return putEmpty(allocator, transport, "/machine-config", body);
 }
 
+pub fn patchMachineConfiguration(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.MachineConfigurationUpdate) !results.Result(void) {
+    const body = try backend.encodeMachineConfigurationUpdate(allocator, request);
+    defer allocator.free(body);
+    var response = try transport.patch("/machine-config", body);
+    defer response.deinit();
+    if (response.status != 204) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = {} };
+}
+
 pub fn putGuestBootSource(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.BootSourceRequest) !results.Result(void) {
     const body = try backend.encodeBootSource(allocator, request);
     defer allocator.free(body);

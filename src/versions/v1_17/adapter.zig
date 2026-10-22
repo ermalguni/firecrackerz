@@ -95,6 +95,12 @@ pub fn encodeMachineConfiguration(allocator: std.mem.Allocator, request: models.
     return std.json.Stringify.valueAlloc(allocator, value, .{ .emit_null_optional_fields = false });
 }
 
+pub fn encodeMachineConfigurationUpdate(allocator: std.mem.Allocator, request: models.MachineConfigurationUpdate) ![]u8 {
+    // The schema reuses the PUT model with required CPU/memory fields, but
+    // PATCH accepts a subset. Keep every field optional without changing codegen.
+    return std.json.Stringify.valueAlloc(allocator, request, .{ .emit_null_optional_fields = false });
+}
+
 pub fn encodeBootSource(allocator: std.mem.Allocator, request: models.BootSourceRequest) ![]u8 {
     const value: wire.BootSource = .{
         .kernel_image_path = request.kernel_image_path,

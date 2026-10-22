@@ -157,6 +157,18 @@ pub const MachineConfigurationRequest = struct {
     huge_pages: ?[]const u8 = null,
 };
 
+/// Pre-boot partial update. Null fields are omitted, preserving current values.
+/// Explicit false, zero, and empty strings are sent for server validation.
+/// Strings are borrowed for the call.
+pub const MachineConfigurationUpdate = struct {
+    vcpu_count: ?i64 = null,
+    mem_size_mib: ?i64 = null,
+    smt: ?bool = null,
+    track_dirty_pages: ?bool = null,
+    cpu_template: ?[]const u8 = null,
+    huge_pages: ?[]const u8 = null,
+};
+
 /// Pre-boot boot source. Strings are borrowed for the call. Paths are resolved
 /// by Firecracker in its filesystem namespace, not by this client.
 pub const BootSourceRequest = struct {
