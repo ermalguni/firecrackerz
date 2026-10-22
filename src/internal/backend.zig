@@ -77,6 +77,36 @@ pub const Backend = union(enum) {
         };
     }
 
+    pub fn encodeVsock(self: Backend, allocator: std.mem.Allocator, request: models.VsockConfiguration) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeVsock(allocator, request),
+        };
+    }
+
+    pub fn encodeEntropy(self: Backend, allocator: std.mem.Allocator, request: models.EntropyConfiguration) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeEntropy(allocator, request),
+        };
+    }
+
+    pub fn encodeSerial(self: Backend, allocator: std.mem.Allocator, request: models.SerialConfiguration) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodeSerial(allocator, request),
+        };
+    }
+
+    pub fn encodePmem(self: Backend, allocator: std.mem.Allocator, request: models.PmemConfiguration) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodePmem(allocator, request),
+        };
+    }
+
+    pub fn encodePmemUpdate(self: Backend, allocator: std.mem.Allocator, request: models.PmemUpdate) ![]u8 {
+        return switch (self) {
+            .v1_17 => v1_17.encodePmemUpdate(allocator, request),
+        };
+    }
+
     pub fn encodeNetworkInterface(self: Backend, allocator: std.mem.Allocator, request: models.NetworkInterfaceRequest) ![]u8 {
         return switch (self) {
             .v1_17 => v1_17.encodeNetworkInterface(allocator, request),

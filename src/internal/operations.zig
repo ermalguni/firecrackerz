@@ -98,6 +98,54 @@ pub fn patchGuestDrive(allocator: std.mem.Allocator, transport: *Transport, back
     return .{ .success = {} };
 }
 
+pub fn putGuestVsock(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.VsockConfiguration) !results.Result(void) {
+    const body = try backend.encodeVsock(allocator, request);
+    defer allocator.free(body);
+    return putEmpty(allocator, transport, "/vsock", body);
+}
+
+pub fn putEntropy(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.EntropyConfiguration) !results.Result(void) {
+    const body = try backend.encodeEntropy(allocator, request);
+    defer allocator.free(body);
+    return putEmpty(allocator, transport, "/entropy", body);
+}
+
+pub fn putSerial(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.SerialConfiguration) !results.Result(void) {
+    const body = try backend.encodeSerial(allocator, request);
+    defer allocator.free(body);
+    return putEmpty(allocator, transport, "/serial", body);
+}
+
+pub fn putGuestPmem(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.PmemConfiguration) !results.Result(void) {
+    const body = try backend.encodePmem(allocator, request);
+    defer allocator.free(body);
+    // Escape only the device ID, keeping it within a single path segment.
+    var buffer: [512]u8 = undefined;
+    const args = .{std.fmt.alt(@as(std.Uri.Component, .{ .raw = request.id }), .formatEscaped)};
+    const path = std.mem.print(&buffer, "/pmem/{f}", args) catch
+        try std.fmt.allocPrint(allocator, "/pmem/{f}", args);
+    defer if (path.ptr != &buffer) allocator.free(path);
+    return putEmpty(allocator, transport, path, body);
+}
+
+pub fn patchGuestPmem(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.PmemUpdate) !results.Result(void) {
+    const body = try backend.encodePmemUpdate(allocator, request);
+    defer allocator.free(body);
+    var buffer: [512]u8 = undefined;
+    const args = .{std.fmt.alt(@as(std.Uri.Component, .{ .raw = request.id }), .formatEscaped)};
+    const path = std.mem.print(&buffer, "/pmem/{f}", args) catch
+        try std.fmt.allocPrint(allocator, "/pmem/{f}", args);
+    defer if (path.ptr != &buffer) allocator.free(path);
+    var response = try transport.patch(path, body);
+    defer response.deinit();
+    if (response.status != 204) return .{ .fault = .{
+        .allocator = allocator,
+        .status = response.status,
+        .body = try allocator.dupe(u8, response.body),
+    } };
+    return .{ .success = {} };
+}
+
 pub fn putGuestNetworkInterface(allocator: std.mem.Allocator, transport: *Transport, backend: Backend, request: models.NetworkInterfaceRequest) !results.Result(void) {
     const body = try backend.encodeNetworkInterface(allocator, request);
     defer allocator.free(body);

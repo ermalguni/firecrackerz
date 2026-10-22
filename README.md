@@ -6,7 +6,7 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 Connection, live instance-information reads, machine configuration reads/writes, boot-source configuration, drive and network-interface configuration, logger and metrics configuration, metrics flushing, and instance start/pause/resume are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getInstanceInfo()`, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `putGuestNetworkInterface()`, `putLogger()`, `putMetrics()`, `flushMetrics()`, `startInstance()`, `pauseInstance()`, `resumeInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
 
-`sendCtrlAltDel()`, `createSnapshot()`, `loadSnapshot()`, and `putBalloon()` are also implemented. Other device configuration, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
+`sendCtrlAltDel()`, `createSnapshot()`, `loadSnapshot()`, and `putBalloon()` are also implemented. Vsock, entropy, serial-console, and persistent-memory configuration and pmem rate-limit updates are available through the unified client. Capability queries and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
 `getVmConfiguration()` exports the full VM resource configuration via `GET /vm/config`.
 `patchMachineConfiguration()` partially updates pre-boot machine settings via `PATCH /machine-config`.
@@ -121,7 +121,7 @@ Returns `Result(models.FullVmConfiguration)` with typed `boot_source`,
 `memory_hotplug` fields. These cover the pinned v1.17 full-configuration schema;
 it does not include MMDS contents, serial-console configuration, or guest state.
 Existing request-shaped models are reused for matching nested configuration
-values; this read does not add write endpoints for the additional devices.
+values, including vsock, entropy, and persistent-memory writes.
 
 All top-level fields are optional. Missing/null resources remain null, empty
 arrays remain empty, and explicit zero/false/empty-string values are preserved.
@@ -478,6 +478,68 @@ response-size limits, and no-retry behavior apply; a timeout does not prove
 the update failed.
 
 See the pinned [network update semantics](https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/api_requests/patch-network-interface.md).
+
+### Configuring additional guest devices
+
+| Client method | Request model | Endpoint |
+| --- | --- | --- |
+| `putGuestVsock` | `VsockConfiguration` | `PUT /vsock` |
+| `putEntropy` | `EntropyConfiguration` | `PUT /entropy` |
+| `putSerial` | `SerialConfiguration` | `PUT /serial` |
+| `putGuestPmem` | `PmemConfiguration` | `PUT /pmem/{id}` |
+| `patchGuestPmem` | `PmemUpdate` | `PATCH /pmem/{id}` |
+
+Configure devices before starting the VM. Firecracker validates values and
+lifecycle restrictions; pmem PATCH updates an existing device's rate limiter
+after startup, not its backing file or root/read-only flags.
+
+```zig
+var vsock = try client.putGuestVsock(.{
+    .guest_cid = 3,
+    .uds_path = "/run/guest.vsock",
+});
+defer vsock.deinit();
+switch (vsock) {
+    .success => {},
+    .fault => |fault| std.log.err("Vsock rejected: HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+Vsock requires `guest_cid` and `uds_path`; optional `vsock_id` is retained
+for the pinned contract but deprecated upstream. This configures the device,
+not a host/guest connection. Firecracker creates the host-facing Unix socket;
+applications implement the connection protocol and guest-side service.
+
+`putEntropy(.{})` enables entropy with no explicit limiter. Its optional
+`rate_limiter` uses `RateLimiter`, with independent `bandwidth` and `ops`
+token buckets. Pmem configuration and updates use that same limiter type.
+
+Serial accepts optional `serial_out_path` and `rate_limiter`. Unlike the
+other devices, its limiter is a **direct `TokenBucket`**, for example
+`.{ .size = 4096, .refill_time = 1000 }`, not a nested bandwidth/ops object.
+The guest kernel command line must also enable its serial console.
+Rate-limited serial bytes can be dropped by Firecracker.
+
+Pmem configuration requires `id` and `path_on_host`; `root_device`,
+`read_only`, and `rate_limiter` are optional. `PmemUpdate` requires only `id`
+and optionally supplies `rate_limiter`. One ID selects both the JSON body
+and a percent-escaped URL segment. Paths belong to Firecracker's filesystem
+namespace; the client does not create backing files or read serial output.
+
+All five methods borrow request data during the call and return
+`Result(void)`. Null fields are omitted recursively; explicit false, zero,
+empty strings, and empty limiter objects are preserved for server validation.
+Only HTTP 204 succeeds. Other statuses retain owned raw faults; local and
+transport failures remain Zig errors. Release each result once. No automatic
+retries: a timeout does not prove the configuration change failed.
+
+Live verification against v1.17.0 accepted vsock, entropy, serial, and pmem
+configuration. Full-configuration readback confirmed vsock, entropy, and pmem;
+serial is not part of that response schema. A pre-boot pmem PATCH returned
+the preserved HTTP 400 lifecycle fault. This verifies configuration, not
+guest communication, serial output, entropy consumption, or pmem I/O.
 
 ### Configuring a balloon device
 
@@ -1304,7 +1366,7 @@ Use a disposable instance for general integration checks. The inspection example
 - `src/internal/backend.zig`: private contract selection and dispatch.
 - `src/versions/v1_17/adapter.zig`: wire-request encoding and response decoding.
 
-See [AGENTS.md](AGENTS.md) for the intended full-client layout. Feature capabilities and additional endpoints are not implemented; there are no placeholder endpoint methods.
+See [AGENTS.md](AGENTS.md) for the intended full-client layout. Feature capability queries remain unimplemented; there are no placeholder endpoint methods.
 
 ### Model generation and additional versions
 

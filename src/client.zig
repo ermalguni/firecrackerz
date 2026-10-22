@@ -115,6 +115,40 @@ pub const Client = struct {
         return operations.patchGuestDrive(self.allocator, &self.transport, self.backend, request);
     }
 
+    /// Creates or updates the pre-boot vsock device. Strings are borrowed;
+    /// the socket path belongs to the server. No local socket I/O or retries.
+    /// HTTP rejections return owned faults that the caller must deinitialize.
+    pub fn putGuestVsock(self: *Client, request: models.VsockConfiguration) !results.Result(void) {
+        return operations.putGuestVsock(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Creates the pre-boot entropy device. Null rate limiters are omitted.
+    /// No automatic retries; the caller must deinitialize returned faults.
+    pub fn putEntropy(self: *Client, request: models.EntropyConfiguration) !results.Result(void) {
+        return operations.putEntropy(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Configures the serial console; the guest kernel must also enable it.
+    /// Borrows the server output path; no local file I/O or automatic retries.
+    /// The caller must deinitialize returned HTTP faults.
+    pub fn putSerial(self: *Client, request: models.SerialConfiguration) !results.Result(void) {
+        return operations.putSerial(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Creates or updates a pre-boot pmem device. The borrowed ID selects path
+    /// and body; the backing path belongs to the server. No local I/O or retries.
+    /// The caller must deinitialize returned HTTP faults.
+    pub fn putGuestPmem(self: *Client, request: models.PmemConfiguration) !results.Result(void) {
+        return operations.putGuestPmem(self.allocator, &self.transport, self.backend, request);
+    }
+
+    /// Updates a pmem device's rate limiter after boot, not its backing path.
+    /// The borrowed ID selects path and body. No automatic retries.
+    /// The caller must deinitialize returned HTTP faults.
+    pub fn patchGuestPmem(self: *Client, request: models.PmemUpdate) !results.Result(void) {
+        return operations.patchGuestPmem(self.allocator, &self.transport, self.backend, request);
+    }
+
     /// Creates or replaces a pre-boot network interface using an existing TAP.
     /// The ID selects both path and body. Does not configure host networking.
     /// Request strings are borrowed; no automatic retries.
