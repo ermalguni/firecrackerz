@@ -83,6 +83,10 @@ pub fn startInstance(allocator: std.mem.Allocator, transport: *Transport) !resul
     return putEmpty(allocator, transport, "/actions", "{\"action_type\":\"InstanceStart\"}");
 }
 
+pub fn sendCtrlAltDel(allocator: std.mem.Allocator, transport: *Transport) !results.Result(void) {
+    return putEmpty(allocator, transport, "/actions", "{\"action_type\":\"SendCtrlAltDel\"}");
+}
+
 pub fn pauseInstance(allocator: std.mem.Allocator, transport: *Transport) !results.Result(void) {
     return patchVm(allocator, transport, "{\"state\":\"Paused\"}");
 }

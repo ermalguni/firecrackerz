@@ -6,7 +6,7 @@ Zig 0.17 bindings for the [Firecracker API](https://github.com/firecracker-micro
 
 Connection, live instance-information reads, machine configuration reads/writes, boot-source configuration, drive and network-interface configuration, logger and metrics configuration, metrics flushing, and instance start/pause/resume are implemented: executable discovery, version selection, Unix-socket HTTP handshake, connection metadata, `getInstanceInfo()`, `getMachineConfiguration()`, `putMachineConfiguration()`, `putGuestBootSource()`, `putGuestDrive()`, `putGuestNetworkInterface()`, `putLogger()`, `putMetrics()`, `flushMetrics()`, `startInstance()`, `pauseInstance()`, `resumeInstance()`, and resource cleanup. **Firecracker v1.17.0 is the only accepted runtime release.** A disposable disk-backed guest has booted through the client to a minimal init program.
 
-Other device configuration, other action methods, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
+`sendCtrlAltDel()` is also implemented. Other device configuration, capability queries, and development-snapshot support are not implemented. Generated v1.18 models do not establish runtime support.
 
 The client connects to an existing process. Launching Firecracker, managing the jailer, preparing images, host networking, guest readiness checks, and process cleanup remain application responsibilities.
 
@@ -347,6 +347,27 @@ switch (resumed) {
 Both methods send `PATCH /vm`: pause uses `{"state":"Paused"}`, resume uses `{"state":"Resumed"}` (not `"Running"`). They return `Result(void)`: only HTTP 204 succeeds; every other status preserves an owned raw fault body. Transport/allocation failures remain Zig errors. Firecracker validates lifecycle state, including requests before boot; the client neither caches state nor suppresses repeated requests.
 
 Requests use the configured timeout and response-size limit and are never automatically retried. After a timeout or disconnect, the state change may already have completed. Inspect `getInstanceInfo()` before deciding what to do; it reports `Paused` or `Running`, but cannot prevent concurrent lifecycle changes.
+
+### Sending Ctrl+Alt+Delete
+
+```zig
+var action = try client.sendCtrlAltDel();
+defer action.deinit();
+switch (action) {
+    .success => {},
+    .fault => |fault| std.log.err("Ctrl+Alt+Del rejected: HTTP {d}: {s}", .{
+        fault.status, fault.body,
+    }),
+}
+```
+
+This sends `PUT /actions` with `{"action_type":"SendCtrlAltDel"}` and returns `Result(void)`. Only HTTP 204 succeeds; other statuses preserve an owned raw fault body, and transport/allocation failures remain Zig errors. Firecracker validates lifecycle state; the client does not cache state or suppress requests.
+
+For the supported **v1.17.0** runtime, this action is **Intel/AMD only**, as documented in the [pinned upstream action contract](https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/api_requests/actions.md). The guest needs keyboard/i8042 support (`CONFIG_SERIO_I8042` and `CONFIG_KEYBOARD_ATKBD` on Linux) and must handle the key sequence. Guests commonly shut down and reset; Firecracker exits on CPU reset. Success acknowledges injection, **not shutdown completion**. This is not a universal stop operation and does not supervise or terminate the Firecracker process.
+
+Existing timeouts and response limits apply. There are no automatic retries: after a timeout or disconnect the sequence may already have been delivered. `getInstanceInfo()` cannot prove whether the guest consumed the sequence; do not blindly retry an ambiguous outcome.
+
+Verification covers HTTP 204, owned HTTP faults, unexpected statuses, timeout, disconnect, oversized responses, and no automatic retries over a local Unix socket. A live disposable v1.17.0 process also rejected the action before boot with HTTP 400, with its fault preserved by the client. Guest shutdown behavior has not been verified for this method.
 
 
 ### Connection behavior

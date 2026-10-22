@@ -123,6 +123,13 @@ pub const Client = struct {
         return operations.startInstance(self.allocator, &self.transport);
     }
 
+    /// Sends Ctrl+Alt+Del; v1.17.0 supports this on Intel/AMD only.
+    /// Success acknowledges injection, not guest shutdown. Guest handling varies.
+    /// Never retried: a timeout/disconnect can follow a delivered key sequence.
+    pub fn sendCtrlAltDel(self: *Client) !results.Result(void) {
+        return operations.sendCtrlAltDel(self.allocator, &self.transport);
+    }
+
     /// Pauses the microVM via PATCH /vm. Firecracker validates lifecycle state.
     /// Never retried; on timeout/disconnect, inspect live state before acting.
     pub fn pauseInstance(self: *Client) !results.Result(void) {
